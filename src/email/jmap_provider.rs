@@ -442,12 +442,59 @@ impl EmailProvider for JmapEmailProvider {
                 .mailbox_id(sent, true);
         }
 
-        request
+        let response = request
             .send()
             .await
             .map_err(|e| op_err(format!("JMAP send failed: {e}")))?;
 
-        Ok(create_id)
+        let mut method_responses = response.unwrap_method_responses();
+
+        // First response: Email/set — check creation succeeded
+        if method_responses.is_empty() {
+            return Err(op_err("No Email/set response in JMAP reply"));
+        }
+        let mut email_set = method_responses
+            .remove(0)
+            .unwrap_set_email()
+            .map_err(|e| op_err(format!("Email/set response parse failed: {e}")))?;
+
+        let email_obj = email_set
+            .created(&create_id)
+            .map_err(|e| op_err(format!("Email/set create failed: {e}")))?;
+
+        let server_email_id = email_obj
+            .id()
+            .map(String::from)
+            .unwrap_or_else(|| create_id.clone());
+
+        // Second response: EmailSubmission/set — check submission succeeded
+        if !method_responses.is_empty() {
+            let submission_set = method_responses
+                .remove(0)
+                .unwrap_set_email_submission()
+                .map_err(|e| {
+                    op_err(format!("EmailSubmission response parse failed: {e}"))
+                })?;
+
+            let has_created = submission_set
+                .created_ids()
+                .is_some_and(|mut ids| ids.next().is_some());
+
+            if !has_created {
+                // Try to get the specific error via not_created_ids
+                let err_ids: Vec<String> = submission_set
+                    .not_created_ids()
+                    .map(|ids| ids.cloned().collect())
+                    .unwrap_or_default();
+                return Err(op_err(format!(
+                    "EmailSubmission/set failed (not_created: {:?}) — \
+                     check Stalwart identity and permissions",
+                    err_ids
+                )));
+            }
+        }
+
+        Ok(server_email_id)
     }
 
     async fn reply_to_email(
