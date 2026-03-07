@@ -469,29 +469,19 @@ impl EmailProvider for JmapEmailProvider {
 
         // Second response: EmailSubmission/set — check submission succeeded
         if !method_responses.is_empty() {
-            let submission_set = method_responses
+            let mut submission_set = method_responses
                 .remove(0)
                 .unwrap_set_email_submission()
                 .map_err(|e| {
                     op_err(format!("EmailSubmission response parse failed: {e}"))
                 })?;
 
-            let has_created = submission_set
-                .created_ids()
-                .is_some_and(|mut ids| ids.next().is_some());
-
-            if !has_created {
-                // Try to get the specific error via not_created_ids
-                let err_ids: Vec<String> = submission_set
-                    .not_created_ids()
-                    .map(|ids| ids.cloned().collect())
-                    .unwrap_or_default();
-                return Err(op_err(format!(
-                    "EmailSubmission/set failed (not_created: {:?}) — \
-                     check Stalwart identity and permissions",
-                    err_ids
-                )));
-            }
+            // The submission create ID is "c0" (first create in the set).
+            // `created()` checks both created and not_created maps, returning
+            // the server error description if it was rejected.
+            submission_set.created("c0").map_err(|e| {
+                op_err(format!("EmailSubmission/set rejected: {e}"))
+            })?;
         }
 
         Ok(server_email_id)
