@@ -9,25 +9,29 @@
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
+// FreeClawdia: check FREECLAWDIA_BASE_DIR first, fall back to IRONCLAW_BASE_DIR
+const FREECLAWDIA_BASE_DIR_ENV: &str = "FREECLAWDIA_BASE_DIR";
 const IRONCLAW_BASE_DIR_ENV: &str = "IRONCLAW_BASE_DIR";
 
-/// Lazily computed IronClaw base directory, cached for the lifetime of the process.
+/// Lazily computed base directory, cached for the lifetime of the process.
 static IRONCLAW_BASE_DIR: LazyLock<PathBuf> = LazyLock::new(compute_ironclaw_base_dir);
 
-/// Compute the IronClaw base directory from environment.
+/// Compute the base directory from environment.
 ///
-/// This is the underlying implementation used by both the public
-/// `ironclaw_base_dir()` function (which caches the result) and tests
-/// (which need to verify different configurations).
+/// Checks `FREECLAWDIA_BASE_DIR` first, then `IRONCLAW_BASE_DIR` for
+/// backwards compatibility.
 pub fn compute_ironclaw_base_dir() -> PathBuf {
-    std::env::var(IRONCLAW_BASE_DIR_ENV)
+    let env_val = std::env::var(FREECLAWDIA_BASE_DIR_ENV)
+        .or_else(|_| std::env::var(IRONCLAW_BASE_DIR_ENV));
+
+    env_val
         .map(PathBuf::from)
         .map(|path| {
             if path.as_os_str().is_empty() {
                 default_base_dir()
             } else if !path.is_absolute() {
                 eprintln!(
-                    "Warning: IRONCLAW_BASE_DIR is a relative path '{}', resolved against current directory",
+                    "Warning: base dir is a relative path '{}', resolved against current directory",
                     path.display()
                 );
                 path
@@ -38,18 +42,15 @@ pub fn compute_ironclaw_base_dir() -> PathBuf {
         .unwrap_or_else(|_| default_base_dir())
 }
 
-/// Get the default IronClaw base directory (~/.ironclaw).
-///
-/// Logs a warning if the home directory cannot be determined and falls back to
-/// the current directory.
+/// Get the default base directory (~/.freeclawdia).
 fn default_base_dir() -> PathBuf {
     if let Some(home) = dirs::home_dir() {
-        home.join(".ironclaw")
+        home.join(".freeclawdia")
     } else {
         eprintln!("Warning: Could not determine home directory, using current directory");
         std::env::current_dir()
             .unwrap_or_else(|_| PathBuf::from("/tmp"))
-            .join(".ironclaw")
+            .join(".freeclawdia")
     }
 }
 
