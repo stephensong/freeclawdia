@@ -374,32 +374,23 @@ impl EmailProvider for JmapEmailProvider {
             email_create.from([jmap_client::email::EmailAddress::from(from.as_str())]);
         }
 
-        let to_addrs: Vec<jmap_client::email::EmailAddress> = draft
-            .to
-            .iter()
-            .map(|a| match &a.name {
-                Some(name) => jmap_client::email::EmailAddress::from((
-                    a.email.as_str(),
-                    name.as_str(),
-                )),
-                None => jmap_client::email::EmailAddress::from(a.email.as_str()),
-            })
-            .collect();
-        email_create.to(to_addrs);
-
-        if !draft.cc.is_empty() {
-            let cc_addrs: Vec<jmap_client::email::EmailAddress> = draft
-                .cc
+        let to_jmap = |addrs: &[EmailAddress]| -> Vec<jmap_client::email::EmailAddress> {
+            addrs
                 .iter()
                 .map(|a| match &a.name {
+                    // From<(&str, &str)> is (name, email)
                     Some(name) => jmap_client::email::EmailAddress::from((
-                        a.email.as_str(),
                         name.as_str(),
+                        a.email.as_str(),
                     )),
                     None => jmap_client::email::EmailAddress::from(a.email.as_str()),
                 })
-                .collect();
-            email_create.cc(cc_addrs);
+                .collect()
+        };
+        email_create.to(to_jmap(&draft.to));
+
+        if !draft.cc.is_empty() {
+            email_create.cc(to_jmap(&draft.cc));
         }
 
         email_create.body_value("body1".to_string(), draft.text_body.as_str());
