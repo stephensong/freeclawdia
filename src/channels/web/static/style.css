@@ -3075,7 +3075,8 @@ mark {
   flex-direction: column;
   flex-shrink: 0;
   transition: width 0.2s ease;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .thread-sidebar.collapsed {
@@ -3160,12 +3161,146 @@ mark {
 }
 
 .threads-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   padding: 8px 12px 4px;
   font-size: 11px;
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.5px;
   color: var(--text-secondary);
+}
+
+.space-new-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.space-new-btn:hover {
+  color: var(--text);
+  border-color: var(--text-secondary);
+}
+
+/* --- Spaces --- */
+
+.space-group {
+  margin-bottom: 2px;
+}
+
+.space-header {
+  display: flex;
+  align-items: center;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+  gap: 6px;
+}
+
+.space-header:hover {
+  color: var(--text);
+  background: var(--bg-secondary);
+}
+
+.space-header .space-chevron {
+  font-size: 10px;
+  transition: transform 0.15s;
+  flex-shrink: 0;
+}
+
+.space-header .space-chevron.collapsed {
+  transform: rotate(-90deg);
+}
+
+.space-header .space-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.space-header .space-count {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--text-secondary);
+  opacity: 0.6;
+}
+
+.space-header .space-delete-btn {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0;
+  line-height: 1;
+  opacity: 0;
+}
+
+.space-header:hover .space-delete-btn {
+  opacity: 0.5;
+}
+
+.space-header .space-delete-btn:hover {
+  opacity: 1;
+  color: #ef4444;
+}
+
+.space-threads {
+  overflow: hidden;
+}
+
+.space-threads.collapsed {
+  display: none;
+}
+
+/* Space context menu (right-click on thread) */
+
+.space-context-menu {
+  position: fixed;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 0;
+  min-width: 140px;
+  z-index: 1000;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.space-context-item {
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.space-context-item:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+.space-context-item.active {
+  font-weight: 600;
+}
+
+.space-context-item.active::before {
+  content: '\2713 ';
+}
+
+.space-context-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
 }
 
 .thread-toggle-btn {
@@ -3182,7 +3317,6 @@ mark {
 }
 
 .thread-list {
-  flex: 1;
   overflow-y: auto;
 }
 
@@ -3211,6 +3345,7 @@ mark {
 .thread-label {
   font-family: var(--font-mono);
   font-size: 12px;
+  cursor: default;
 }
 
 .thread-right {

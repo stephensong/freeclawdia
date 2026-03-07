@@ -1377,6 +1377,10 @@ pub struct ConversationSummary {
     pub last_activity: DateTime<Utc>,
     /// Thread type extracted from metadata (e.g. "assistant", "thread").
     pub thread_type: Option<String>,
+    /// Space name extracted from metadata, if assigned.
+    pub space: Option<String>,
+    /// User-defined custom title, if set.
+    pub custom_title: Option<String>,
 }
 
 /// A single message in a conversation.
@@ -1453,6 +1457,14 @@ impl Store {
                     .get("thread_type")
                     .and_then(|v| v.as_str())
                     .map(String::from);
+                let space = metadata
+                    .get("space")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                let custom_title = metadata
+                    .get("custom_title")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
                 ConversationSummary {
                     id: r.get("id"),
                     title: r.get("title"),
@@ -1460,6 +1472,8 @@ impl Store {
                     started_at: r.get("started_at"),
                     last_activity: r.get("last_activity"),
                     thread_type,
+                    space,
+                    custom_title,
                 }
             })
             .collect())

@@ -16,7 +16,7 @@ use axum::{
         IntoResponse,
         sse::{Event, KeepAlive, Sse},
     },
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use serde::Deserialize;
 use tokio::sync::{mpsc, oneshot};
@@ -221,6 +221,21 @@ pub async fn start_server(
             "/api/chat/messages/delete",
             post(chat_delete_messages_handler),
         )
+        // Spaces
+        .route(
+            "/api/chat/spaces",
+            get(spaces_list_handler).post(spaces_create_handler),
+        )
+        .route("/api/chat/spaces/collapse", put(spaces_collapse_handler))
+        .route(
+            "/api/chat/spaces/{name}",
+            axum::routing::delete(spaces_delete_handler),
+        )
+        .route(
+            "/api/chat/thread/{id}/space",
+            put(thread_assign_space_handler),
+        )
+        .route("/api/chat/thread/{id}/rename", put(thread_rename_handler))
         // Memory
         .route("/api/memory/tree", get(memory_tree_handler))
         .route("/api/memory/list", get(memory_list_handler))
@@ -240,10 +255,7 @@ pub async fn start_server(
         // Logs
         .route("/api/logs/events", get(logs_events_handler))
         .route("/api/logs/level", get(logs_level_get_handler))
-        .route(
-            "/api/logs/level",
-            axum::routing::put(logs_level_set_handler),
-        )
+        .route("/api/logs/level", put(logs_level_set_handler))
         // Extensions
         .route("/api/extensions", get(extensions_list_handler))
         .route("/api/extensions/tools", get(extensions_tools_handler))
@@ -291,10 +303,7 @@ pub async fn start_server(
         .route("/api/settings/export", get(settings_export_handler))
         .route("/api/settings/import", post(settings_import_handler))
         .route("/api/settings/{key}", get(settings_get_handler))
-        .route(
-            "/api/settings/{key}",
-            axum::routing::put(settings_set_handler),
-        )
+        .route("/api/settings/{key}", put(settings_set_handler))
         .route(
             "/api/settings/{key}",
             axum::routing::delete(settings_delete_handler),
@@ -1063,8 +1072,9 @@ async fn chat_threads_handler(
                     turn_count: s.message_count.max(0) as usize,
                     created_at: s.started_at.to_rfc3339(),
                     updated_at: s.last_activity.to_rfc3339(),
-                    title: s.title.clone(),
+                    title: s.custom_title.clone().or_else(|| s.title.clone()),
                     thread_type: s.thread_type.clone(),
+                    space: s.space.clone(),
                 };
 
                 if s.id == assistant_id {
@@ -1084,13 +1094,18 @@ async fn chat_threads_handler(
                     updated_at: chrono::Utc::now().to_rfc3339(),
                     title: None,
                     thread_type: Some("assistant".to_string()),
+                    space: None,
                 });
             }
+
+            // Load spaces from settings
+            let spaces = load_spaces_from_db(store.as_ref(), &state.user_id).await;
 
             return Ok(Json(ThreadListResponse {
                 assistant_thread,
                 threads,
                 active_thread: sess.active_thread,
+                spaces,
             }));
         }
     }
@@ -1107,6 +1122,7 @@ async fn chat_threads_handler(
             updated_at: t.updated_at.to_rfc3339(),
             title: None,
             thread_type: None,
+            space: None,
         })
         .collect();
 
@@ -1114,6 +1130,7 @@ async fn chat_threads_handler(
         assistant_thread: None,
         threads,
         active_thread: sess.active_thread,
+        spaces: Vec::new(),
     }))
 }
 
@@ -1137,6 +1154,7 @@ async fn chat_new_thread_handler(
         updated_at: thread.updated_at.to_rfc3339(),
         title: None,
         thread_type: Some("thread".to_string()),
+        space: None,
     };
 
     // Persist the empty conversation row with thread_type metadata
@@ -1282,6 +1300,213 @@ async fn chat_delete_messages_handler(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(DeleteMessagesResponse { deleted }))
+}
+
+// --- Space helpers & handlers ---
+
+const SPACES_SETTING_KEY: &str = "spaces";
+
+async fn load_spaces_from_db(
+    store: &(dyn crate::db::Database + Send + Sync),
+    user_id: &str,
+) -> Vec<SpaceInfo> {
+    match store.get_setting(user_id, SPACES_SETTING_KEY).await {
+        Ok(Some(val)) => serde_json::from_value(val).unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+async fn save_spaces(
+    store: &(dyn crate::db::Database + Send + Sync),
+    user_id: &str,
+    spaces: &[SpaceInfo],
+) -> Result<(), (StatusCode, String)> {
+    let val = serde_json::to_value(spaces)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    store
+        .set_setting(user_id, SPACES_SETTING_KEY, &val)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(())
+}
+
+async fn spaces_list_handler(
+    State(state): State<Arc<GatewayState>>,
+) -> Result<Json<Vec<SpaceInfo>>, (StatusCode, String)> {
+    let store = state.store.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Database not available".to_string(),
+    ))?;
+    let spaces = load_spaces_from_db(store.as_ref(), &state.user_id).await;
+    Ok(Json(spaces))
+}
+
+async fn spaces_create_handler(
+    State(state): State<Arc<GatewayState>>,
+    Json(req): Json<CreateSpaceRequest>,
+) -> Result<Json<SpaceInfo>, (StatusCode, String)> {
+    let name = req.name.trim().to_string();
+    if name.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Space name cannot be empty".to_string(),
+        ));
+    }
+
+    let store = state.store.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Database not available".to_string(),
+    ))?;
+
+    let mut spaces = load_spaces_from_db(store.as_ref(), &state.user_id).await;
+    if spaces.iter().any(|s| s.name == name) {
+        return Err((
+            StatusCode::CONFLICT,
+            format!("Space '{}' already exists", name),
+        ));
+    }
+
+    let space = SpaceInfo {
+        name: name.clone(),
+        collapsed: false,
+    };
+    spaces.push(space.clone());
+    save_spaces(store.as_ref(), &state.user_id, &spaces).await?;
+    Ok(Json(space))
+}
+
+async fn spaces_delete_handler(
+    State(state): State<Arc<GatewayState>>,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let store = state.store.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Database not available".to_string(),
+    ))?;
+
+    // Check no threads are assigned to this space
+    if let Ok(summaries) = store
+        .list_conversations_with_preview(&state.user_id, "gateway", 200)
+        .await
+    {
+        let has_threads = summaries.iter().any(|s| s.space.as_deref() == Some(&name));
+        if has_threads {
+            return Err((
+                StatusCode::CONFLICT,
+                "Cannot delete a space that still has threads. Move them first.".to_string(),
+            ));
+        }
+    }
+
+    let mut spaces = load_spaces_from_db(store.as_ref(), &state.user_id).await;
+    let before = spaces.len();
+    spaces.retain(|s| s.name != name);
+    if spaces.len() == before {
+        return Err((StatusCode::NOT_FOUND, format!("Space '{}' not found", name)));
+    }
+    save_spaces(store.as_ref(), &state.user_id, &spaces).await?;
+    Ok(Json(serde_json::json!({"deleted": true})))
+}
+
+async fn spaces_collapse_handler(
+    State(state): State<Arc<GatewayState>>,
+    Json(req): Json<CollapseSpaceRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let store = state.store.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Database not available".to_string(),
+    ))?;
+
+    let mut spaces = load_spaces_from_db(store.as_ref(), &state.user_id).await;
+    let space = spaces.iter_mut().find(|s| s.name == req.name).ok_or((
+        StatusCode::NOT_FOUND,
+        format!("Space '{}' not found", req.name),
+    ))?;
+    space.collapsed = req.collapsed;
+    save_spaces(store.as_ref(), &state.user_id, &spaces).await?;
+    Ok(Json(serde_json::json!({"ok": true})))
+}
+
+async fn thread_assign_space_handler(
+    State(state): State<Arc<GatewayState>>,
+    Path(thread_id): Path<String>,
+    Json(req): Json<AssignSpaceRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let tid: Uuid = thread_id
+        .parse()
+        .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid thread ID".to_string()))?;
+
+    let store = state.store.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Database not available".to_string(),
+    ))?;
+
+    // Verify ownership
+    let owns = store
+        .conversation_belongs_to_user(tid, &state.user_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if !owns {
+        return Err((StatusCode::NOT_FOUND, "Thread not found".to_string()));
+    }
+
+    // If assigning to a space, verify the space exists
+    if let Some(ref space_name) = req.space {
+        let spaces = load_spaces_from_db(store.as_ref(), &state.user_id).await;
+        if !spaces.iter().any(|s| &s.name == space_name) {
+            return Err((
+                StatusCode::NOT_FOUND,
+                format!("Space '{}' does not exist", space_name),
+            ));
+        }
+    }
+
+    let value = match &req.space {
+        Some(name) => serde_json::Value::String(name.clone()),
+        None => serde_json::Value::Null,
+    };
+    store
+        .update_conversation_metadata_field(tid, "space", &value)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(serde_json::json!({"ok": true})))
+}
+
+async fn thread_rename_handler(
+    State(state): State<Arc<GatewayState>>,
+    Path(thread_id): Path<String>,
+    Json(req): Json<RenameThreadRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let tid: Uuid = thread_id
+        .parse()
+        .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid thread ID".to_string()))?;
+
+    let store = state.store.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Database not available".to_string(),
+    ))?;
+
+    let owns = store
+        .conversation_belongs_to_user(tid, &state.user_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if !owns {
+        return Err((StatusCode::NOT_FOUND, "Thread not found".to_string()));
+    }
+
+    let title = req.title.trim().to_string();
+    let value = if title.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::Value::String(title)
+    };
+    store
+        .update_conversation_metadata_field(tid, "custom_title", &value)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(serde_json::json!({"ok": true})))
 }
 
 // --- Memory handlers ---

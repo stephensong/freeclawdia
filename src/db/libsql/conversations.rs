@@ -125,6 +125,14 @@ impl ConversationStore for LibSqlBackend {
                 .get("thread_type")
                 .and_then(|v| v.as_str())
                 .map(String::from);
+            let space = metadata
+                .get("space")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let custom_title = metadata
+                .get("custom_title")
+                .and_then(|v| v.as_str())
+                .map(String::from);
             results.push(ConversationSummary {
                 id: row
                     .get::<String>(0)
@@ -136,6 +144,8 @@ impl ConversationStore for LibSqlBackend {
                 message_count: get_i64(&row, 4),
                 title: get_opt_text(&row, 5),
                 thread_type,
+                space,
+                custom_title,
             });
         }
         Ok(results)

@@ -28,6 +28,8 @@ pub struct ThreadInfo {
     pub title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thread_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub space: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -37,6 +39,9 @@ pub struct ThreadListResponse {
     /// Regular conversation threads.
     pub threads: Vec<ThreadInfo>,
     pub active_thread: Option<Uuid>,
+    /// User-defined spaces for grouping threads.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub spaces: Vec<SpaceInfo>,
 }
 
 #[derive(Debug, Serialize)]
@@ -124,6 +129,37 @@ pub struct DeleteMessagesRequest {
 #[derive(Debug, Serialize)]
 pub struct DeleteMessagesResponse {
     pub deleted: usize,
+}
+
+// --- Spaces ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpaceInfo {
+    pub name: String,
+    #[serde(default)]
+    pub collapsed: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateSpaceRequest {
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CollapseSpaceRequest {
+    pub name: String,
+    pub collapsed: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AssignSpaceRequest {
+    /// Space name to assign, or null to unassign.
+    pub space: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RenameThreadRequest {
+    pub title: String,
 }
 
 // --- Approval ---

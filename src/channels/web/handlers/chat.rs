@@ -452,8 +452,9 @@ pub async fn chat_threads_handler(
                     turn_count: s.message_count.max(0) as usize,
                     created_at: s.started_at.to_rfc3339(),
                     updated_at: s.last_activity.to_rfc3339(),
-                    title: s.title.clone(),
+                    title: s.custom_title.clone().or_else(|| s.title.clone()),
                     thread_type: s.thread_type.clone(),
+                    space: s.space.clone(),
                 };
 
                 if s.id == assistant_id {
@@ -473,6 +474,7 @@ pub async fn chat_threads_handler(
                     updated_at: chrono::Utc::now().to_rfc3339(),
                     title: None,
                     thread_type: Some("assistant".to_string()),
+                    space: None,
                 });
             }
 
@@ -480,6 +482,7 @@ pub async fn chat_threads_handler(
                 assistant_thread,
                 threads,
                 active_thread: sess.active_thread,
+                spaces: Vec::new(),
             }));
         }
     }
@@ -496,6 +499,7 @@ pub async fn chat_threads_handler(
             updated_at: t.updated_at.to_rfc3339(),
             title: None,
             thread_type: None,
+            space: None,
         })
         .collect();
 
@@ -503,6 +507,7 @@ pub async fn chat_threads_handler(
         assistant_thread: None,
         threads,
         active_thread: sess.active_thread,
+        spaces: Vec::new(),
     }))
 }
 
@@ -526,6 +531,7 @@ pub async fn chat_new_thread_handler(
         updated_at: thread.updated_at.to_rfc3339(),
         title: None,
         thread_type: Some("thread".to_string()),
+        space: None,
     };
 
     // Persist the empty conversation row with thread_type metadata

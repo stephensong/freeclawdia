@@ -1266,6 +1266,8 @@ function removeScrollSpinner() {
 
 // --- Threads ---
 
+let _spaces = []; // cached space list from server
+
 function loadThreads() {
   apiFetch('/api/chat/threads').then((data) => {
     // Pinned assistant thread
@@ -1277,36 +1279,82 @@ function loadThreads() {
       const meta = document.getElementById('assistant-meta');
       const count = data.assistant_thread.turn_count || 0;
       meta.textContent = count > 0 ? count + ' turns' : '';
+      // Replace contextmenu handler to pick up current data
+      el.oncontextmenu = (e) => {
+        e.preventDefault();
+        showThreadContextMenu(e, data.assistant_thread);
+      };
     }
 
-    // Regular threads
+    _spaces = data.spaces || [];
+    const threads = data.threads || [];
     const list = document.getElementById('thread-list');
     list.innerHTML = '';
-    const threads = data.threads || [];
+    const spacesList = document.getElementById('spaces-list');
+    spacesList.innerHTML = '';
+
+    // Group threads by space
+    const spaceThreads = {}; // space name -> [thread]
+    const ungrouped = [];
     for (const thread of threads) {
-      const item = document.createElement('div');
-      item.className = 'thread-item' + (thread.id === currentThreadId ? ' active' : '');
-      const label = document.createElement('span');
-      label.className = 'thread-label';
-      label.textContent = thread.title || thread.id.substring(0, 8);
-      label.title = thread.title ? thread.title + ' (' + thread.id + ')' : thread.id;
-      item.appendChild(label);
-      const rightCol = document.createElement('div');
-      rightCol.className = 'thread-right';
-      const meta = document.createElement('span');
-      meta.className = 'thread-meta';
-      meta.textContent = (thread.turn_count || 0) + ' turns';
-      rightCol.appendChild(meta);
-      const delBtn = document.createElement('button');
-      delBtn.className = 'thread-delete-btn';
-      delBtn.innerHTML = '&#x1f5d1;';
-      delBtn.title = 'Delete thread';
-      delBtn.addEventListener('click', (e) => { e.stopPropagation(); deleteThread(thread.id); });
-      rightCol.appendChild(delBtn);
-      item.appendChild(rightCol);
-      item.addEventListener('click', () => switchThread(thread.id));
-      list.appendChild(item);
+      if (thread.space) {
+        (spaceThreads[thread.space] = spaceThreads[thread.space] || []).push(thread);
+      } else {
+        ungrouped.push(thread);
+      }
     }
+
+    // Render ungrouped threads
+    for (const thread of ungrouped) {
+      list.appendChild(buildThreadItem(thread));
+    }
+
+    // Render space groups below the SPACES header
+    for (const space of _spaces) {
+      const group = document.createElement('div');
+      group.className = 'space-group';
+
+      const header = document.createElement('div');
+      header.className = 'space-header';
+
+      const chevron = document.createElement('span');
+      chevron.className = 'space-chevron' + (space.collapsed ? ' collapsed' : '');
+      chevron.textContent = '\u25BE';
+      header.appendChild(chevron);
+
+      const nameEl = document.createElement('span');
+      nameEl.className = 'space-name';
+      nameEl.textContent = space.name;
+      header.appendChild(nameEl);
+
+      const groupThreads = spaceThreads[space.name] || [];
+      const countEl = document.createElement('span');
+      countEl.className = 'space-count';
+      countEl.textContent = groupThreads.length;
+      header.appendChild(countEl);
+
+      const delBtn = document.createElement('button');
+      delBtn.className = 'space-delete-btn';
+      delBtn.innerHTML = '&times;';
+      delBtn.title = groupThreads.length === 0 ? 'Delete space' : 'Move all threads out first';
+      if (groupThreads.length > 0) delBtn.disabled = true;
+      delBtn.addEventListener('click', (e) => { e.stopPropagation(); deleteSpace(space.name); });
+      header.appendChild(delBtn);
+
+      header.addEventListener('click', () => toggleSpaceCollapse(space.name, !space.collapsed));
+      group.appendChild(header);
+
+      const threadContainer = document.createElement('div');
+      threadContainer.className = 'space-threads' + (space.collapsed ? ' collapsed' : '');
+      for (const thread of groupThreads) {
+        threadContainer.appendChild(buildThreadItem(thread));
+      }
+      group.appendChild(threadContainer);
+      spacesList.appendChild(group);
+    }
+
+    // Hide SPACES header if no spaces exist
+    document.getElementById('spaces-header').style.display = _spaces.length > 0 ? 'flex' : 'none';
 
     // Default to assistant thread on first load if no thread selected
     if (!currentThreadId && assistantThreadId) {
@@ -1318,6 +1366,127 @@ function loadThreads() {
       enableChatInput();
     }
   }).catch(() => {});
+}
+
+function buildThreadItem(thread) {
+  const item = document.createElement('div');
+  item.className = 'thread-item' + (thread.id === currentThreadId ? ' active' : '');
+  const label = document.createElement('span');
+  label.className = 'thread-label';
+  label.textContent = thread.title || 'New thread';
+  if (thread.title) label.title = thread.title;
+  item.appendChild(label);
+  const rightCol = document.createElement('div');
+  rightCol.className = 'thread-right';
+  const meta = document.createElement('span');
+  meta.className = 'thread-meta';
+  meta.textContent = (thread.turn_count || 0) + ' turns';
+  rightCol.appendChild(meta);
+  const delBtn = document.createElement('button');
+  delBtn.className = 'thread-delete-btn';
+  delBtn.innerHTML = '&#x1f5d1;';
+  delBtn.title = 'Delete thread';
+  delBtn.addEventListener('click', (e) => { e.stopPropagation(); deleteThread(thread.id); });
+  rightCol.appendChild(delBtn);
+  item.appendChild(rightCol);
+  item.addEventListener('click', () => switchThread(thread.id));
+  // Right-click for context menu (rename, space assignment)
+  item.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    showThreadContextMenu(e, thread);
+  });
+  return item;
+}
+
+function renameThread(threadId, currentTitle) {
+  const newTitle = prompt('Rename thread:', currentTitle);
+  if (newTitle === null) return; // cancelled
+  apiFetch('/api/chat/thread/' + threadId + '/rename', {
+    method: 'PUT',
+    body: { title: newTitle.trim() },
+  })
+    .then(() => loadThreads())
+    .catch((err) => showToast('Rename failed: ' + err.message, 'error'));
+}
+
+function showThreadContextMenu(e, thread) {
+  // Remove any existing context menu
+  const existing = document.getElementById('space-context-menu');
+  if (existing) existing.remove();
+
+  const menu = document.createElement('div');
+  menu.id = 'space-context-menu';
+  menu.className = 'space-context-menu';
+  menu.style.left = e.pageX + 'px';
+  menu.style.top = e.pageY + 'px';
+
+  // Rename option
+  const renameItem = document.createElement('div');
+  renameItem.className = 'space-context-item';
+  renameItem.textContent = 'Rename';
+  renameItem.addEventListener('click', () => { menu.remove(); renameThread(thread.id, thread.title || ''); });
+  menu.appendChild(renameItem);
+
+  // Divider
+  const divider = document.createElement('div');
+  divider.className = 'space-context-divider';
+  menu.appendChild(divider);
+
+  // "No space" option
+  const noneItem = document.createElement('div');
+  noneItem.className = 'space-context-item' + (!thread.space ? ' active' : '');
+  noneItem.textContent = 'No space';
+  noneItem.addEventListener('click', () => { menu.remove(); assignThreadToSpace(thread.id, null); });
+  menu.appendChild(noneItem);
+
+  // Space options
+  for (const space of _spaces) {
+    const item = document.createElement('div');
+    item.className = 'space-context-item' + (thread.space === space.name ? ' active' : '');
+    item.textContent = space.name;
+    item.addEventListener('click', () => { menu.remove(); assignThreadToSpace(thread.id, space.name); });
+    menu.appendChild(item);
+  }
+
+  document.body.appendChild(menu);
+
+  // Close on click outside
+  const closeMenu = (ev) => {
+    if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('click', closeMenu); }
+  };
+  setTimeout(() => document.addEventListener('click', closeMenu), 0);
+}
+
+// --- Space management ---
+
+function createNewSpace() {
+  const name = prompt('Space name:');
+  if (!name || !name.trim()) return;
+  apiFetch('/api/chat/spaces', { method: 'POST', body: { name: name.trim() } })
+    .then(() => { showToast('Space created', 'success'); loadThreads(); })
+    .catch((err) => showToast(err.message, 'error'));
+}
+
+function deleteSpace(name) {
+  if (!confirm('Delete space "' + name + '"?')) return;
+  apiFetch('/api/chat/spaces/' + encodeURIComponent(name), { method: 'DELETE' })
+    .then(() => { showToast('Space deleted', 'success'); loadThreads(); })
+    .catch((err) => showToast(err.message, 'error'));
+}
+
+function toggleSpaceCollapse(name, collapsed) {
+  apiFetch('/api/chat/spaces/collapse', { method: 'PUT', body: { name, collapsed } })
+    .then(() => loadThreads())
+    .catch(() => {});
+}
+
+function assignThreadToSpace(threadId, spaceName) {
+  apiFetch('/api/chat/thread/' + threadId + '/space', {
+    method: 'PUT',
+    body: { space: spaceName },
+  })
+    .then(() => loadThreads())
+    .catch((err) => showToast(err.message, 'error'));
 }
 
 function switchToAssistant() {
