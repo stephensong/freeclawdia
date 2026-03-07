@@ -51,6 +51,9 @@ pub enum Error {
 
     #[error("Routine error: {0}")]
     Routine(#[from] RoutineError),
+
+    #[error("Email error: {0}")]
+    Email(#[from] EmailError),
 }
 
 /// Configuration-related errors.
@@ -418,6 +421,22 @@ pub enum RoutineError {
 
     #[error("LLM response truncated (finish_reason=length) with no content")]
     TruncatedResponse,
+}
+
+/// Email-related errors.
+#[derive(Debug, thiserror::Error)]
+pub enum EmailError {
+    #[error("Email configuration error: {reason}")]
+    Config { reason: String },
+
+    #[error("JMAP connection failed: {reason}")]
+    Connection { reason: String },
+
+    #[error("Email operation failed: {reason}")]
+    Operation { reason: String },
+
+    #[error("Email not found: {id}")]
+    NotFound { id: String },
 }
 
 /// Result type alias for the agent.

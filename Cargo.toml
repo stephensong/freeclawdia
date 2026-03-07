@@ -100,6 +100,9 @@ tower-http = { version = "0.6", features = ["trace", "cors", "set-header"] }
 # Cron scheduling for routines
 cron = "0.13"
 
+# JMAP email client (for Stalwart and other JMAP servers)
+jmap-client = { version = "0.4", optional = true }
+
 # Safety/sanitization
 regex = "1"
 aho-corasick = "1"
@@ -187,7 +190,7 @@ tempfile = "3"
 insta = "1.46.3"
 
 [features]
-default = ["postgres", "libsql", "html-to-markdown"]
+default = ["postgres", "libsql", "html-to-markdown", "email"]
 postgres = [
     "dep:deadpool-postgres",
     "dep:tokio-postgres",
@@ -201,6 +204,7 @@ postgres = [
 ]
 libsql = ["dep:libsql"]
 integration = []
+email = ["dep:jmap-client"]
 html-to-markdown = ["dep:html-to-markdown-rs", "dep:readabilityrs"]
 
 [[test]]

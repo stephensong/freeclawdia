@@ -1,6 +1,7 @@
 //! Built-in tools that come with the agent.
 
 mod echo;
+pub mod email;
 pub mod extension_tools;
 mod file;
 mod http;
@@ -17,6 +18,10 @@ pub mod skill_tools;
 mod time;
 
 pub use echo::EchoTool;
+pub use email::{
+    EmailDeleteTool, EmailListTool, EmailMailboxesTool, EmailMoveTool, EmailReadTool,
+    EmailReplyTool, EmailSearchTool, EmailSendTool,
+};
 pub use extension_tools::{
     ExtensionInfoTool, ToolActivateTool, ToolAuthTool, ToolInstallTool, ToolListTool,
     ToolRemoveTool, ToolSearchTool,

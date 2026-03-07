@@ -9,6 +9,7 @@ mod agent;
 mod builder;
 mod channels;
 mod database;
+mod email;
 mod embeddings;
 mod heartbeat;
 pub(crate) mod helpers;
@@ -33,6 +34,7 @@ pub use self::agent::AgentConfig;
 pub use self::builder::BuilderModeConfig;
 pub use self::channels::{ChannelsConfig, CliConfig, GatewayConfig, HttpConfig, SignalConfig};
 pub use self::database::{DatabaseBackend, DatabaseConfig, SslMode, default_libsql_path};
+pub use self::email::EmailConfig;
 pub use self::embeddings::EmbeddingsConfig;
 pub use self::heartbeat::HeartbeatConfig;
 pub use self::hygiene::HygieneConfig;
@@ -72,6 +74,7 @@ pub struct Config {
     pub sandbox: SandboxModeConfig,
     pub claude_code: ClaudeCodeConfig,
     pub skills: SkillsConfig,
+    pub email: EmailConfig,
     pub observability: crate::observability::ObservabilityConfig,
 }
 
@@ -267,6 +270,7 @@ impl Config {
             sandbox: SandboxModeConfig::resolve()?,
             claude_code: ClaudeCodeConfig::resolve()?,
             skills: SkillsConfig::resolve()?,
+            email: EmailConfig::resolve(settings)?,
             observability: crate::observability::ObservabilityConfig {
                 backend: std::env::var("OBSERVABILITY_BACKEND").unwrap_or_else(|_| "none".into()),
             },
