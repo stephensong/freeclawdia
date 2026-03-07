@@ -154,6 +154,32 @@ async fn test_02_send_and_receive() {
     println!("E2E send-and-receive: PASSED");
 }
 
+/// Send with no display name (matches compose modal input for bare email).
+#[tokio::test]
+async fn test_02b_send_no_display_name() {
+    let gary = gary_provider();
+
+    let unique_subject = format!("No-Name Test {}", uuid::Uuid::new_v4());
+
+    let draft = EmailDraft {
+        to: vec![EmailAddress {
+            name: None,
+            email: "alice@local.dev".to_string(),
+        }],
+        cc: Vec::new(),
+        bcc: Vec::new(),
+        subject: unique_subject.clone(),
+        text_body: "Sent with no display name.".to_string(),
+        html_body: None,
+        in_reply_to: None,
+        references: Vec::new(),
+    };
+
+    println!("Sending to alice@local.dev (no display name), subject: {unique_subject}");
+    let id = gary.send_email(draft).await.expect("send_email failed");
+    println!("Success! Email ID: {id}");
+}
+
 /// Verify gary's Sent folder contains the email after sending.
 #[tokio::test]
 async fn test_03_sent_folder() {
