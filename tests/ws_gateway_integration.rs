@@ -60,6 +60,8 @@ async fn start_test_server() -> (
         registry_entries: Vec::new(),
         cost_guard: None,
         startup_time: std::time::Instant::now(),
+        #[cfg(feature = "email")]
+        email_provider: None,
     });
 
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();

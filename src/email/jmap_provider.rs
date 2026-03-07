@@ -320,29 +320,8 @@ impl EmailProvider for JmapEmailProvider {
             .find(|mb| mb.role.as_deref() == Some("drafts"))
             .map(|mb| mb.id.clone());
 
-        // Get the sender's email address from the JMAP session
-        let session = client.session();
-        let from_email = session
-            .primary_accounts()
-            .next()
-            .and_then(|(_, account_id)| {
-                session.account(account_id).and_then(|a| {
-                    // Use the account name which is typically the email
-                    let name = a.name();
-                    if name.contains('@') {
-                        Some(name.to_string())
-                    } else {
-                        None
-                    }
-                })
-            })
-            .or_else(|| {
-                // Fall back to the username from config
-                self.config.username.clone()
-            });
-
-        // Fetch the user's identity ID (required for submission)
-        let identity_id = {
+        // Fetch the user's identity (required for submission + from address)
+        let (identity_id, from_email) = {
             let mut id_request = client.build();
             id_request.get_identity();
             let id_response = id_request
@@ -359,11 +338,18 @@ impl EmailProvider for JmapEmailProvider {
                             get.take_list()
                                 .into_iter()
                                 .next()
-                                .and_then(|identity| identity.id)
+                                .map(|identity| {
+                                    let id = identity.id.unwrap_or_default();
+                                    let email = identity.email;
+                                    (id, email)
+                                })
                         })
                 })
                 .ok_or_else(|| op_err("No JMAP identity configured. Create one in Stalwart admin."))?
         };
+
+        // Use identity email, fall back to config username
+        let from_email = from_email.or_else(|| self.config.username.clone());
 
         // Need a new request since we consumed the previous one for identity lookup
         let mut request = client.build();
