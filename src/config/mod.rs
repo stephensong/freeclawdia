@@ -147,6 +147,8 @@ impl Config {
                 ..SkillsConfig::default()
             },
             observability: crate::observability::ObservabilityConfig::default(),
+            #[cfg(feature = "email")]
+            email: crate::config::email::EmailConfig::default(),
         }
     }
 

@@ -5,7 +5,7 @@ use crate::error::ConfigError;
 use crate::settings::Settings;
 
 /// Email integration configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct EmailConfig {
     /// Whether email integration is enabled.
     pub enabled: bool,
