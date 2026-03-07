@@ -4263,3 +4263,81 @@ function formatDate(isoString) {
   const d = new Date(isoString);
   return d.toLocaleString();
 }
+
+// --- Email Compose Modal ---
+
+function openComposeModal() {
+  const modal = document.getElementById('email-compose-modal');
+  modal.style.display = 'flex';
+  document.getElementById('compose-to').value = '';
+  document.getElementById('compose-cc').value = '';
+  document.getElementById('compose-bcc').value = '';
+  document.getElementById('compose-subject').value = '';
+  document.getElementById('compose-body').value = '';
+  document.getElementById('compose-status').textContent = '';
+  document.getElementById('compose-status').className = 'email-compose-status';
+  document.getElementById('compose-send-btn').disabled = false;
+  document.getElementById('compose-to').focus();
+}
+
+function closeComposeModal() {
+  document.getElementById('email-compose-modal').style.display = 'none';
+}
+
+function parseEmailAddresses(input) {
+  if (!input.trim()) return [];
+  return input.split(',').map(function(s) {
+    s = s.trim();
+    // Parse "Name <email>" or just "email"
+    const match = s.match(/^(.+?)\s*<(.+?)>$/);
+    if (match) {
+      return { name: match[1].trim(), email: match[2].trim() };
+    }
+    return { name: null, email: s };
+  }).filter(function(a) { return a.email.length > 0; });
+}
+
+function sendComposeEmail() {
+  const toStr = document.getElementById('compose-to').value;
+  const ccStr = document.getElementById('compose-cc').value;
+  const bccStr = document.getElementById('compose-bcc').value;
+  const subject = document.getElementById('compose-subject').value;
+  const body = document.getElementById('compose-body').value;
+  const statusEl = document.getElementById('compose-status');
+  const sendBtn = document.getElementById('compose-send-btn');
+
+  const to = parseEmailAddresses(toStr);
+  if (to.length === 0) {
+    statusEl.textContent = 'At least one recipient is required';
+    statusEl.className = 'email-compose-status error';
+    return;
+  }
+  if (!subject.trim()) {
+    statusEl.textContent = 'Subject is required';
+    statusEl.className = 'email-compose-status error';
+    return;
+  }
+
+  sendBtn.disabled = true;
+  statusEl.textContent = 'Sending...';
+  statusEl.className = 'email-compose-status';
+
+  apiFetch('/api/email/send', {
+    method: 'POST',
+    body: {
+      to: to,
+      cc: parseEmailAddresses(ccStr),
+      bcc: parseEmailAddresses(bccStr),
+      subject: subject,
+      body: body
+    }
+  }).then(function(data) {
+    statusEl.textContent = 'Sent!';
+    statusEl.className = 'email-compose-status success';
+    setTimeout(function() { closeComposeModal(); }, 1000);
+  }).catch(function(err) {
+    statusEl.textContent = err.message || 'Failed to send';
+    statusEl.className = 'email-compose-status error';
+    sendBtn.disabled = false;
+  });
+}

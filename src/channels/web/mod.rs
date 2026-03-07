@@ -100,6 +100,8 @@ impl GatewayChannel {
             registry_entries: Vec::new(),
             cost_guard: None,
             startup_time: std::time::Instant::now(),
+            #[cfg(feature = "email")]
+            email_provider: None,
         });
 
         Self {
@@ -135,6 +137,8 @@ impl GatewayChannel {
             registry_entries: self.state.registry_entries.clone(),
             cost_guard: self.state.cost_guard.clone(),
             startup_time: self.state.startup_time,
+            #[cfg(feature = "email")]
+            email_provider: self.state.email_provider.clone(),
         };
         mutate(&mut new_state);
         self.state = Arc::new(new_state);
@@ -237,6 +241,16 @@ impl GatewayChannel {
     /// Inject the cost guard for token/cost tracking in the status popover.
     pub fn with_cost_guard(mut self, cg: Arc<crate::agent::cost_guard::CostGuard>) -> Self {
         self.rebuild_state(|s| s.cost_guard = Some(cg));
+        self
+    }
+
+    /// Inject the email provider for the compose/send API.
+    #[cfg(feature = "email")]
+    pub fn with_email_provider(
+        mut self,
+        provider: Arc<dyn crate::email::EmailProvider>,
+    ) -> Self {
+        self.rebuild_state(|s| s.email_provider = Some(provider));
         self
     }
 

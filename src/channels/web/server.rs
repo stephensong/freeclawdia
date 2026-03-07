@@ -167,6 +167,9 @@ pub struct GatewayState {
     pub cost_guard: Option<Arc<crate::agent::cost_guard::CostGuard>>,
     /// Server startup time for uptime calculation.
     pub startup_time: std::time::Instant,
+    /// Email provider for compose/send API.
+    #[cfg(feature = "email")]
+    pub email_provider: Option<Arc<dyn crate::email::EmailProvider>>,
 }
 
 /// Start the gateway HTTP server.
@@ -221,6 +224,8 @@ pub async fn start_server(
             "/api/chat/messages/delete",
             post(chat_delete_messages_handler),
         )
+        // Email
+        .route("/api/email/send", post(email_send_handler))
         // Spaces
         .route(
             "/api/chat/spaces",
@@ -1293,6 +1298,65 @@ async fn chat_delete_messages_handler(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(DeleteMessagesResponse { deleted }))
+}
+
+// --- Email handler ---
+
+async fn email_send_handler(
+    State(state): State<Arc<GatewayState>>,
+    Json(req): Json<EmailSendRequest>,
+) -> Result<Json<EmailSendResponse>, (StatusCode, String)> {
+    #[cfg(feature = "email")]
+    {
+        let provider = state.email_provider.as_ref().ok_or((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Email provider not configured".to_string(),
+        ))?;
+
+        if req.to.is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "At least one recipient is required".to_string(),
+            ));
+        }
+
+        let to_addrs = |addrs: Vec<EmailAddressDto>| -> Vec<crate::email::EmailAddress> {
+            addrs
+                .into_iter()
+                .map(|a| crate::email::EmailAddress {
+                    name: a.name,
+                    email: a.email,
+                })
+                .collect()
+        };
+
+        let draft = crate::email::EmailDraft {
+            to: to_addrs(req.to),
+            cc: to_addrs(req.cc),
+            bcc: to_addrs(req.bcc),
+            subject: req.subject,
+            text_body: req.body,
+            html_body: req.html_body,
+            in_reply_to: req.in_reply_to,
+            references: req.references,
+        };
+
+        let email_id = provider
+            .send_email(draft)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        Ok(Json(EmailSendResponse { email_id }))
+    }
+
+    #[cfg(not(feature = "email"))]
+    {
+        let _ = (state, req);
+        Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Email feature not enabled".to_string(),
+        ))
+    }
 }
 
 // --- Space helpers & handlers ---

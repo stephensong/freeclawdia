@@ -505,6 +505,13 @@ async fn async_main() -> anyhow::Result<()> {
             gw = gw.with_skill_catalog(Arc::clone(sc));
         }
         gw = gw.with_cost_guard(Arc::clone(&components.cost_guard));
+        #[cfg(feature = "email")]
+        if config.email.enabled {
+            let provider = Arc::new(ironclaw::email::JmapEmailProvider::new(
+                config.email.clone(),
+            ));
+            gw = gw.with_email_provider(provider);
+        }
         if config.sandbox.enabled {
             gw = gw.with_prompt_queue(Arc::clone(&prompt_queue));
 

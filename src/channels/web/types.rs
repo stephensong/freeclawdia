@@ -654,6 +654,37 @@ pub struct SkillInstallRequest {
     pub content: Option<String>,
 }
 
+// --- Email ---
+
+#[derive(Debug, Deserialize)]
+pub struct EmailSendRequest {
+    pub to: Vec<EmailAddressDto>,
+    #[serde(default)]
+    pub cc: Vec<EmailAddressDto>,
+    #[serde(default)]
+    pub bcc: Vec<EmailAddressDto>,
+    pub subject: String,
+    pub body: String,
+    /// Optional HTML body; if omitted, plain text is sent.
+    pub html_body: Option<String>,
+    /// In-Reply-To message ID (for replies).
+    pub in_reply_to: Option<String>,
+    /// References header values (for threading).
+    #[serde(default)]
+    pub references: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EmailAddressDto {
+    pub name: Option<String>,
+    pub email: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EmailSendResponse {
+    pub email_id: String,
+}
+
 // --- Auth Token ---
 
 /// Request to submit an auth token for an extension (dedicated endpoint).

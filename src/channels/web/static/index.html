@@ -75,6 +75,47 @@
     </div>
   </div>
 
+  <!-- Email Compose Modal -->
+  <div id="email-compose-modal" class="email-compose-modal" style="display: none;">
+    <div class="email-compose-overlay" onclick="closeComposeModal()"></div>
+    <div class="email-compose-content">
+      <div class="email-compose-header">
+        <h2>New Message</h2>
+        <button class="email-compose-close" onclick="closeComposeModal()" title="Close">&times;</button>
+      </div>
+      <div class="email-compose-body">
+        <div class="email-compose-field">
+          <label for="compose-to">To</label>
+          <input type="text" id="compose-to" placeholder="recipient@example.com, ...">
+        </div>
+        <div class="email-compose-field">
+          <label for="compose-cc">Cc</label>
+          <input type="text" id="compose-cc" placeholder="cc@example.com, ...">
+        </div>
+        <div class="email-compose-field">
+          <label for="compose-bcc">Bcc</label>
+          <input type="text" id="compose-bcc" placeholder="bcc@example.com, ...">
+        </div>
+        <div class="email-compose-field">
+          <label for="compose-subject">Subject</label>
+          <input type="text" id="compose-subject" placeholder="Subject">
+        </div>
+        <div class="email-compose-field email-compose-body-field">
+          <textarea id="compose-body" placeholder="Write your message..."></textarea>
+        </div>
+      </div>
+      <div class="email-compose-footer">
+        <div class="email-compose-footer-left">
+          <span id="compose-status" class="email-compose-status"></span>
+        </div>
+        <div class="email-compose-footer-right">
+          <button class="email-compose-btn discard" onclick="closeComposeModal()">Discard</button>
+          <button class="email-compose-btn send" id="compose-send-btn" onclick="sendComposeEmail()">Send</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Main App (hidden until authenticated) -->
   <div id="app">
     <!-- Tab Bar -->
@@ -99,6 +140,13 @@
         <span id="sse-status">Connected</span>
         <div class="gateway-popover" id="gateway-popover"></div>
       </div>
+      <button class="compose-btn" id="compose-btn" onclick="openComposeModal()" title="Compose email">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path>
+          <polyline points="22,6 12,13 2,6"></polyline>
+        </svg>
+        <span>Compose</span>
+      </button>
       <button class="restart-btn" id="restart-btn" onclick="triggerRestart()" title="Gracefully restart the process">
         <svg id="restart-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M23 4v6h-6"></path>
