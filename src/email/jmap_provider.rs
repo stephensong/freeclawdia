@@ -7,6 +7,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use jmap_client::client::Client;
 use jmap_client::client::Credentials;
+use jmap_client::core::set::SetObject;
 use jmap_client::email;
 use jmap_client::mailbox;
 use tokio::sync::RwLock;
@@ -66,8 +67,42 @@ impl JmapEmailProvider {
             }
         })?;
 
+        // Resolve the JMAP well-known URL first to discover redirect hostnames.
+        // Stalwart redirects .well-known/jmap to /jmap/session using the server's
+        // reverse DNS hostname, which jmap-client blocks unless trusted.
+        let well_known = format!("{}/.well-known/jmap", url.trim_end_matches('/'));
+        let mut trusted: Vec<String> = Vec::new();
+        if let Ok(parsed) = url::Url::parse(url)
+            && let Some(host) = parsed.host_str()
+        {
+            trusted.push(host.to_string());
+        }
+        // Follow the redirect chain to discover additional hostnames
+        if let Ok(resp) = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap_or_default()
+            .get(&well_known)
+            .send()
+            .await
+            && let Some(location) = resp.headers().get("location")
+            && let Ok(loc) = location.to_str()
+        {
+            if let Ok(redirect_url) = url::Url::parse(loc)
+                && let Some(host) = redirect_url.host_str()
+            {
+                trusted.push(host.to_string());
+            } else if let Ok(redirect_url) =
+                url::Url::parse(&format!("{}{}", url.trim_end_matches('/'), loc))
+                && let Some(host) = redirect_url.host_str()
+            {
+                trusted.push(host.to_string());
+            }
+        }
+
         let client = Client::new()
             .credentials(Credentials::basic(username, password))
+            .follow_redirects(trusted)
             .connect(url)
             .await
             .map_err(|e| EmailError::Connection {
@@ -285,12 +320,60 @@ impl EmailProvider for JmapEmailProvider {
             .find(|mb| mb.role.as_deref() == Some("drafts"))
             .map(|mb| mb.id.clone());
 
+        // Get the sender's email address from the JMAP session
+        let session = client.session();
+        let from_email = session
+            .primary_accounts()
+            .next()
+            .and_then(|(_, account_id)| {
+                session.account(account_id).and_then(|a| {
+                    // Use the account name which is typically the email
+                    let name = a.name();
+                    if name.contains('@') {
+                        Some(name.to_string())
+                    } else {
+                        None
+                    }
+                })
+            })
+            .or_else(|| {
+                // Fall back to the username from config
+                self.config.username.clone()
+            });
+
+        // Fetch the user's identity ID (required for submission)
+        let identity_id = {
+            let mut id_request = client.build();
+            id_request.get_identity();
+            let id_response = id_request
+                .send()
+                .await
+                .map_err(|e| op_err(format!("JMAP identity fetch failed: {e}")))?;
+            id_response
+                .unwrap_method_responses()
+                .pop()
+                .and_then(|r| {
+                    r.unwrap_get_identity()
+                        .ok()
+                        .and_then(|mut get| {
+                            get.take_list()
+                                .into_iter()
+                                .next()
+                                .and_then(|identity| identity.id)
+                        })
+                })
+                .ok_or_else(|| op_err("No JMAP identity configured. Create one in Stalwart admin."))?
+        };
+
+        // Need a new request since we consumed the previous one for identity lookup
         let mut request = client.build();
         let email_create = request.set_email().create();
         email_create.subject(&draft.subject);
 
-        // Set recipients using From<(&str, &str)> for (email, name)
-        // or From<&str> for email-only
+        if let Some(ref from) = from_email {
+            email_create.from([jmap_client::email::EmailAddress::from(from.as_str())]);
+        }
+
         let to_addrs: Vec<jmap_client::email::EmailAddress> = draft
             .to
             .iter()
@@ -319,21 +402,13 @@ impl EmailProvider for JmapEmailProvider {
             email_create.cc(cc_addrs);
         }
 
-        // Set body: create a body value and reference it from text_body
-        email_create.body_value(
-            "body1".to_string(),
-            draft.text_body.as_str(),
-        );
-        email_create.text_body(
-            jmap_client::email::EmailBodyPart::new().part_id("body1"),
-        );
+        email_create.body_value("body1".to_string(), draft.text_body.as_str());
+        email_create.text_body(jmap_client::email::EmailBodyPart::new().part_id("body1"));
 
-        // Put in drafts mailbox if available
         if let Some(ref drafts) = drafts_id {
             email_create.mailbox_ids([drafts.as_str()]);
         }
 
-        // Set in-reply-to and references for threading
         if let Some(ref irt) = draft.in_reply_to {
             email_create.in_reply_to([irt.as_str()]);
         }
@@ -342,12 +417,37 @@ impl EmailProvider for JmapEmailProvider {
             email_create.references(refs);
         }
 
+        let create_id = email_create
+            .create_id()
+            .ok_or_else(|| op_err("Failed to get create ID"))?;
+
+        // Submit the email for delivery via EmailSubmission/set.
+        // Reference the just-created email by its create ID.
+        let submission_set = request.set_email_submission();
+        submission_set
+            .create()
+            .email_id(format!("#{create_id}"))
+            .identity_id(&identity_id);
+
+        // On successful submission, move email from Drafts to Sent
+        let sent_id = mailboxes
+            .iter()
+            .find(|mb| mb.role.as_deref() == Some("sent"))
+            .map(|mb| mb.id.clone());
+        if let (Some(sent), Some(drafts)) = (&sent_id, &drafts_id) {
+            submission_set
+                .arguments()
+                .on_success_update_email(&create_id)
+                .mailbox_id(drafts, false)
+                .mailbox_id(sent, true);
+        }
+
         request
             .send()
             .await
             .map_err(|e| op_err(format!("JMAP send failed: {e}")))?;
 
-        Ok("sent".to_string())
+        Ok(create_id)
     }
 
     async fn reply_to_email(

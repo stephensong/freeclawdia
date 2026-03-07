@@ -381,6 +381,14 @@ impl AppBuilder {
             None
         };
 
+        // Register email tools if enabled
+        #[cfg(feature = "email")]
+        if self.config.email.enabled {
+            let provider = crate::email::JmapEmailProvider::new(self.config.email.clone());
+            tools.register_email_tools(Arc::new(provider));
+            tracing::info!("Email tools enabled (JMAP, connects lazily on first use)");
+        }
+
         // Register builder tool if enabled
         if self.config.builder.enabled
             && (self.config.agent.allow_local_tools || !self.config.sandbox.enabled)

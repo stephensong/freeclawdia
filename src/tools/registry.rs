@@ -23,6 +23,7 @@ use crate::tools::builtin::{
     ToolActivateTool, ToolAuthTool, ToolInstallTool, ToolListTool, ToolRemoveTool, ToolSearchTool,
     WriteFileTool,
 };
+use crate::email::EmailProvider;
 use crate::tools::rate_limiter::RateLimiter;
 use crate::tools::tool::{Tool, ToolDomain};
 use crate::tools::wasm::{
@@ -446,6 +447,23 @@ impl ToolRegistry {
         )));
         self.register_sync(Arc::new(RoutineHistoryTool::new(store)));
         tracing::info!("Registered 6 routine management tools");
+    }
+
+    /// Register email tools with a provider.
+    pub fn register_email_tools(&self, provider: Arc<dyn EmailProvider>) {
+        use crate::tools::builtin::{
+            EmailDeleteTool, EmailListTool, EmailMailboxesTool, EmailMoveTool, EmailReadTool,
+            EmailReplyTool, EmailSearchTool, EmailSendTool,
+        };
+        self.register_sync(Arc::new(EmailMailboxesTool::new(Arc::clone(&provider))));
+        self.register_sync(Arc::new(EmailListTool::new(Arc::clone(&provider))));
+        self.register_sync(Arc::new(EmailReadTool::new(Arc::clone(&provider))));
+        self.register_sync(Arc::new(EmailSearchTool::new(Arc::clone(&provider))));
+        self.register_sync(Arc::new(EmailSendTool::new(Arc::clone(&provider))));
+        self.register_sync(Arc::new(EmailReplyTool::new(Arc::clone(&provider))));
+        self.register_sync(Arc::new(EmailDeleteTool::new(Arc::clone(&provider))));
+        self.register_sync(Arc::new(EmailMoveTool::new(provider)));
+        tracing::info!("Registered 8 email tools");
     }
 
     /// Register message tool for sending messages to channels.
