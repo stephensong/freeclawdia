@@ -226,6 +226,15 @@ pub async fn start_server(
         )
         // Email
         .route("/api/email/send", post(email_send_handler))
+        .route("/api/email/mailboxes", get(email_mailboxes_handler))
+        .route("/api/email/list", get(email_list_handler))
+        .route("/api/email/read", get(email_read_handler))
+        .route("/api/email/read-status", post(email_read_status_handler))
+        .route("/api/email/move", post(email_move_handler))
+        .route("/api/email/delete", post(email_delete_handler))
+        // Docs (FAQ/IAQ)
+        .route("/api/docs/faq", get(docs_faq_handler))
+        .route("/api/docs/iaq", get(docs_iaq_handler))
         // Spaces
         .route(
             "/api/chat/spaces",
@@ -403,13 +412,17 @@ pub async fn start_server(
 
 // --- Static file handlers ---
 
-async fn index_handler() -> impl IntoResponse {
+async fn index_handler(
+    State(state): State<Arc<GatewayState>>,
+) -> impl IntoResponse {
+    let html = include_str!("static/index.html")
+        .replace("<title>clawdia</title>", &format!("<title>clawdia \u{2014} {}</title>", state.user_id));
     (
         [
             (header::CONTENT_TYPE, "text/html; charset=utf-8"),
             (header::CACHE_CONTROL, "no-cache"),
         ],
-        include_str!("static/index.html"),
+        html,
     )
 }
 
@@ -1357,6 +1370,247 @@ async fn email_send_handler(
             "Email feature not enabled".to_string(),
         ))
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct EmailListQuery {
+    mailbox_id: Option<String>,
+    #[serde(default = "default_email_limit")]
+    limit: u32,
+}
+
+fn default_email_limit() -> u32 {
+    50
+}
+
+#[derive(Debug, Deserialize)]
+struct EmailReadQuery {
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct EmailReadStatusRequest {
+    id: String,
+    read: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct EmailMoveRequest {
+    email_id: String,
+    to_mailbox_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct EmailDeleteRequest {
+    email_id: String,
+}
+
+async fn email_mailboxes_handler(
+    State(state): State<Arc<GatewayState>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    #[cfg(feature = "email")]
+    {
+        let provider = state.email_provider.as_ref().ok_or((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Email provider not configured".to_string(),
+        ))?;
+
+        let mailboxes = provider
+            .list_mailboxes()
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        Ok(Json(serde_json::json!({ "mailboxes": mailboxes })))
+    }
+
+    #[cfg(not(feature = "email"))]
+    {
+        let _ = state;
+        Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Email feature not enabled".to_string(),
+        ))
+    }
+}
+
+async fn email_list_handler(
+    State(state): State<Arc<GatewayState>>,
+    Query(query): Query<EmailListQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    #[cfg(feature = "email")]
+    {
+        let provider = state.email_provider.as_ref().ok_or((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Email provider not configured".to_string(),
+        ))?;
+
+        let mailbox_id = query.mailbox_id.as_deref().unwrap_or("inbox");
+        let resolved = crate::tools::builtin::email::resolve_mailbox_id(provider.as_ref(), mailbox_id)
+            .await
+            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
+        let emails = provider
+            .list_emails(&resolved, 0, query.limit)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        Ok(Json(serde_json::json!({ "emails": emails })))
+    }
+
+    #[cfg(not(feature = "email"))]
+    {
+        let _ = (state, query);
+        Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Email feature not enabled".to_string(),
+        ))
+    }
+}
+
+async fn email_read_handler(
+    State(state): State<Arc<GatewayState>>,
+    Query(query): Query<EmailReadQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    #[cfg(feature = "email")]
+    {
+        let provider = state.email_provider.as_ref().ok_or((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Email provider not configured".to_string(),
+        ))?;
+
+        let mut email = provider
+            .get_email(&query.id)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        // If no text body but HTML exists, generate plain text from HTML
+        if email.text_body.is_none()
+            && let Some(ref html) = email.html_body
+            && let Ok(text) = html2text::from_read(html.as_bytes(), 80)
+        {
+            email.text_body = Some(text);
+        }
+
+        // Mark as read
+        let _ = provider.set_read(&query.id, true).await;
+
+        Ok(Json(serde_json::json!(email))
+        )
+    }
+
+    #[cfg(not(feature = "email"))]
+    {
+        let _ = (state, query);
+        Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Email feature not enabled".to_string(),
+        ))
+    }
+}
+
+async fn email_read_status_handler(
+    State(state): State<Arc<GatewayState>>,
+    Json(req): Json<EmailReadStatusRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    #[cfg(feature = "email")]
+    {
+        let provider = state.email_provider.as_ref().ok_or((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Email provider not configured".to_string(),
+        ))?;
+
+        provider
+            .set_read(&req.id, req.read)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        Ok(Json(serde_json::json!({ "ok": true })))
+    }
+
+    #[cfg(not(feature = "email"))]
+    {
+        let _ = (state, req);
+        Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Email feature not enabled".to_string(),
+        ))
+    }
+}
+
+async fn email_move_handler(
+    State(state): State<Arc<GatewayState>>,
+    Json(req): Json<EmailMoveRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    #[cfg(feature = "email")]
+    {
+        let provider = state.email_provider.as_ref().ok_or((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Email provider not configured".to_string(),
+        ))?;
+
+        provider
+            .move_email(&req.email_id, &req.to_mailbox_id)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        Ok(Json(serde_json::json!({ "ok": true })))
+    }
+
+    #[cfg(not(feature = "email"))]
+    {
+        let _ = (state, req);
+        Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Email feature not enabled".to_string(),
+        ))
+    }
+}
+
+async fn email_delete_handler(
+    State(state): State<Arc<GatewayState>>,
+    Json(req): Json<EmailDeleteRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    #[cfg(feature = "email")]
+    {
+        let provider = state.email_provider.as_ref().ok_or((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Email provider not configured".to_string(),
+        ))?;
+
+        provider
+            .delete_email(&req.email_id)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        Ok(Json(serde_json::json!({ "ok": true })))
+    }
+
+    #[cfg(not(feature = "email"))]
+    {
+        let _ = (state, req);
+        Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Email feature not enabled".to_string(),
+        ))
+    }
+}
+
+// --- Docs (FAQ/IAQ) handlers ---
+
+async fn docs_faq_handler() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("FAQ.md");
+    let content = tokio::fs::read_to_string(&path)
+        .await
+        .unwrap_or_else(|_| "# FAQ\n\nNo FAQ.md found.".to_string());
+    Ok(Json(serde_json::json!({ "content": content })))
+}
+
+async fn docs_iaq_handler() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("IAQ.md");
+    let content = tokio::fs::read_to_string(&path)
+        .await
+        .unwrap_or_else(|_| "# IAQ\n\nNo IAQ.md found.".to_string());
+    Ok(Json(serde_json::json!({ "content": content })))
 }
 
 // --- Space helpers & handlers ---
@@ -2736,6 +2990,7 @@ async fn gateway_status_handler(
 
     Json(GatewayStatusResponse {
         version: env!("CARGO_PKG_VERSION").to_string(),
+        user_id: state.user_id.clone(),
         sse_connections,
         ws_connections,
         total_connections: sse_connections + ws_connections,
@@ -2758,6 +3013,7 @@ struct ModelUsageEntry {
 #[derive(serde::Serialize)]
 struct GatewayStatusResponse {
     version: String,
+    user_id: String,
     sse_connections: u64,
     ws_connections: u64,
     total_connections: u64,

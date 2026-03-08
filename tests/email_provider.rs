@@ -230,9 +230,65 @@ async fn test_03_sent_folder() {
     println!("Sent folder test: PASSED");
 }
 
+/// Verify cross-user delivery: alice sends to gary's inbox.
+#[tokio::test]
+async fn test_04_alice_sends_to_gary() {
+    let alice = alice_provider();
+    let gary = gary_provider();
+
+    let unique_subject = format!("AliceToGary {}", uuid::Uuid::new_v4());
+    let draft = EmailDraft {
+        to: vec![EmailAddress {
+            name: None,
+            email: "gary@local.dev".to_string(),
+        }],
+        cc: Vec::new(),
+        bcc: Vec::new(),
+        subject: unique_subject.clone(),
+        text_body: "Hello Gary, from Alice.".to_string(),
+        html_body: None,
+        in_reply_to: None,
+        references: Vec::new(),
+    };
+
+    println!("Alice sending to gary@local.dev: {unique_subject}");
+    let id = alice.send_email(draft).await.expect("alice send_email failed");
+    println!("Sent! ID: {id}");
+
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    let mailboxes = gary.list_mailboxes().await.expect("gary list_mailboxes");
+    let inbox = mailboxes
+        .iter()
+        .find(|mb| mb.role.as_deref() == Some("inbox"))
+        .expect("Gary has no inbox");
+
+    println!(
+        "Gary's inbox: {} total, {} unread",
+        inbox.total_emails, inbox.unread_emails
+    );
+
+    let emails = gary
+        .list_emails(&inbox.id, 0, 50)
+        .await
+        .expect("gary list_emails");
+    for e in &emails {
+        println!("  [{}] {} — from {:?}", e.id, e.subject, e.from);
+    }
+
+    let found = emails.iter().find(|e| e.subject == unique_subject);
+    assert!(
+        found.is_some(),
+        "Email '{}' not found in Gary's inbox. Found {} emails.",
+        unique_subject,
+        emails.len()
+    );
+    println!("Alice->Gary delivery: PASSED");
+}
+
 /// Diagnostic: list every mailbox and try to list emails from each.
 #[tokio::test]
-async fn test_04_list_all_mailbox_contents() {
+async fn test_05_list_all_mailbox_contents() {
     let gary = gary_provider();
 
     let mailboxes = gary.list_mailboxes().await.expect("list_mailboxes");

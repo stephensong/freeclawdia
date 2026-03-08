@@ -161,6 +161,7 @@ pub async fn gateway_status_handler(
         .unwrap_or(0);
 
     Json(GatewayStatusResponse {
+        user_id: state.user_id.clone(),
         sse_connections,
         ws_connections,
         total_connections: sse_connections + ws_connections,
@@ -169,6 +170,7 @@ pub async fn gateway_status_handler(
 
 #[derive(serde::Serialize)]
 pub struct GatewayStatusResponse {
+    pub user_id: String,
     pub sse_connections: u64,
     pub ws_connections: u64,
     pub total_connections: u64,

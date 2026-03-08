@@ -607,8 +607,24 @@ function addMessage(role, content, messageIds) {
     div.setAttribute('data-raw', content);
     div.innerHTML = renderMarkdown(content);
   }
+  addCopyButton(div, role === 'user' ? content : null);
   container.appendChild(div);
   container.scrollTop = container.scrollHeight;
+}
+
+function addCopyButton(msgEl, plainText) {
+  const btn = document.createElement('button');
+  btn.className = 'copy-msg-btn';
+  btn.textContent = 'Copy';
+  btn.addEventListener('click', function(e) {
+    e.stopPropagation();
+    const text = plainText || msgEl.getAttribute('data-raw') || msgEl.textContent;
+    navigator.clipboard.writeText(text).then(function() {
+      btn.textContent = 'Copied!';
+      setTimeout(function() { btn.textContent = 'Copy'; }, 1500);
+    });
+  });
+  msgEl.appendChild(btn);
 }
 
 function appendToLastAssistant(chunk) {
@@ -1212,6 +1228,7 @@ function createMessageElement(role, content, messageIds) {
     div.setAttribute('data-raw', content);
     div.innerHTML = renderMarkdown(content);
   }
+  addCopyButton(div, role === 'user' ? content : null);
   return div;
 }
 
@@ -1781,6 +1798,9 @@ function switchTab(tab) {
     chatHeader.style.display = (tab === 'chat' && _selectionMode) ? '' : 'none';
   }
 
+  if (tab === 'email') loadEmailTab();
+  if (tab === 'faq') loadDocsTab('faq');
+  if (tab === 'iaq') loadDocsTab('iaq');
   if (tab === 'memory') loadMemoryTree();
   if (tab === 'jobs') loadJobs();
   if (tab === 'routines') loadRoutines();
@@ -4340,4 +4360,563 @@ function sendComposeEmail() {
     statusEl.className = 'email-compose-status error';
     sendBtn.disabled = false;
   });
+}
+
+// --- Email Tab ---
+
+let currentMailboxId = null;
+let currentEmailId = null;
+let trashMailboxId = null;
+let emailMailboxes = [];
+
+function loadEmailTab() {
+  loadMailboxes();
+  initEmailSplitter();
+}
+
+function initEmailSplitter() {
+  var splitter = document.getElementById('email-splitter');
+  if (!splitter || splitter._initialized) return;
+  splitter._initialized = true;
+
+  var listPane = splitter.previousElementSibling;
+  var mainEl = splitter.parentElement;
+
+  splitter.addEventListener('mousedown', function(e) {
+    e.preventDefault();
+    splitter.classList.add('dragging');
+    var startY = e.clientY;
+    var startHeight = listPane.getBoundingClientRect().height;
+    var totalHeight = mainEl.getBoundingClientRect().height;
+
+    function onMove(e) {
+      var delta = e.clientY - startY;
+      var newHeight = Math.max(60, Math.min(totalHeight - 60, startHeight + delta));
+      listPane.style.height = newHeight + 'px';
+    }
+    function onUp() {
+      splitter.classList.remove('dragging');
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+}
+
+function loadMailboxes() {
+  apiFetch('/api/email/mailboxes').then(function(data) {
+    var container = document.getElementById('email-mailboxes');
+    container.innerHTML = '';
+    var mailboxes = data.mailboxes || [];
+    // Sort: inbox first, then sent, drafts, trash, then rest
+    var order = ['inbox', 'sent', 'drafts', 'trash', 'junk', 'archive'];
+    mailboxes.sort(function(a, b) {
+      var ai = order.indexOf((a.role || '').toLowerCase());
+      var bi = order.indexOf((b.role || '').toLowerCase());
+      if (ai === -1) ai = 99;
+      if (bi === -1) bi = 99;
+      return ai - bi;
+    });
+    emailMailboxes = mailboxes;
+    var trash = mailboxes.find(function(m) {
+      var r = (m.role || '').toLowerCase();
+      return r === 'trash' || r === 'junk';
+    });
+    if (!trash) {
+      trash = mailboxes.find(function(m) {
+        return /trash|deleted/i.test(m.name);
+      });
+    }
+    trashMailboxId = trash ? trash.id : null;
+
+    mailboxes.forEach(function(mb) {
+      var div = document.createElement('div');
+      div.className = 'email-mailbox-item' + (mb.id === currentMailboxId ? ' active' : '');
+      var nameSpan = document.createElement('span');
+      nameSpan.textContent = mb.name;
+      div.appendChild(nameSpan);
+      if (mb.unread_emails > 0) {
+        var badge = document.createElement('span');
+        var isInbox = (mb.role || '').toLowerCase() === 'inbox';
+        badge.className = 'email-mailbox-badge' + (isInbox ? '' : ' muted');
+        badge.textContent = mb.unread_emails;
+        div.appendChild(badge);
+      }
+      div.addEventListener('click', function() { selectMailbox(mb.id, mb.name); });
+      // Right-click on trash mailbox → Empty Trash
+      var isTrash = mb.id === trashMailboxId;
+      if (isTrash) {
+        div.addEventListener('contextmenu', function(e) {
+          e.preventDefault();
+          showEmailContextMenu(e.clientX, e.clientY, [
+            { label: 'Empty Trash', className: 'danger', action: function() { emptyTrash(mb.id); } }
+          ]);
+        });
+      }
+      container.appendChild(div);
+    });
+    // Update tab badge
+    var totalUnread = mailboxes.reduce(function(sum, mb) {
+      return sum + ((mb.role === 'inbox') ? mb.unread_emails : 0);
+    }, 0);
+    var tabBtn = document.getElementById('email-tab-btn');
+    // Remove old badge
+    var oldBadge = tabBtn.querySelector('.email-unread-badge');
+    if (oldBadge) oldBadge.remove();
+    if (totalUnread > 0) {
+      var b = document.createElement('span');
+      b.className = 'email-unread-badge';
+      b.textContent = totalUnread;
+      tabBtn.appendChild(b);
+    }
+    // Auto-select inbox on first load
+    if (!currentMailboxId && mailboxes.length > 0) {
+      var inbox = mailboxes.find(function(m) { return m.role === 'inbox'; }) || mailboxes[0];
+      selectMailbox(inbox.id, inbox.name);
+    }
+  }).catch(function(err) {
+    console.warn('[email] Failed to load mailboxes:', err);
+    document.getElementById('email-mailboxes').innerHTML =
+      '<div class="empty-state" style="padding:12px;font-size:12px;">Email not available</div>';
+  });
+}
+
+function selectMailbox(id, name) {
+  currentMailboxId = id;
+  currentEmailId = null;
+  document.getElementById('email-list-header').textContent = name;
+  document.getElementById('email-read-pane').innerHTML = '<div class="empty-state">Select an email to read</div>';
+  // Update active state in sidebar
+  document.querySelectorAll('.email-mailbox-item').forEach(function(el) {
+    el.classList.remove('active');
+  });
+  // Find and activate
+  document.querySelectorAll('.email-mailbox-item').forEach(function(el) {
+    if (el.querySelector('span') && el.querySelector('span').textContent === name) {
+      el.classList.add('active');
+    }
+  });
+  loadEmailList(id);
+}
+
+function loadEmailList(mailboxId) {
+  var listEl = document.getElementById('email-list');
+  listEl.innerHTML = '<div class="empty-state">Loading...</div>';
+
+  apiFetch('/api/email/list?mailbox_id=' + encodeURIComponent(mailboxId) + '&limit=50').then(function(data) {
+    listEl.innerHTML = '';
+    var emails = data.emails || [];
+    if (emails.length === 0) {
+      listEl.innerHTML = '<div class="empty-state">No emails</div>';
+      return;
+    }
+    emails.forEach(function(email) {
+      var div = document.createElement('div');
+      div.className = 'email-list-item' + (email.is_read ? '' : ' unread') + (email.id === currentEmailId ? ' active' : '');
+
+      var fromEl = document.createElement('div');
+      fromEl.className = 'email-item-from';
+      var fromAddr = (email.from && email.from.length > 0) ? (email.from[0].name || email.from[0].email) : 'Unknown';
+      fromEl.textContent = fromAddr;
+
+      var subjEl = document.createElement('div');
+      subjEl.className = 'email-item-subject';
+      subjEl.textContent = email.subject || '(no subject)';
+
+      var dateEl = document.createElement('div');
+      dateEl.className = 'email-item-date';
+      dateEl.textContent = email.received_at ? formatEmailDateTime(email.received_at) : '';
+
+      div.appendChild(fromEl);
+      div.appendChild(subjEl);
+      div.appendChild(dateEl);
+      div.addEventListener('click', function() { openEmail(email.id); });
+      div.addEventListener('contextmenu', function(e) {
+        e.preventDefault();
+        var items = [];
+        if (trashMailboxId && currentMailboxId !== trashMailboxId) {
+          items.push({ label: 'Move to Trash', className: 'danger', action: function() { moveEmailToTrash(email.id); } });
+        }
+        if (currentMailboxId === trashMailboxId) {
+          items.push({ label: 'Delete permanently', className: 'danger', action: function() { deleteEmailPermanently(email.id); } });
+        }
+        if (items.length > 0) {
+          showEmailContextMenu(e.clientX, e.clientY, items);
+        }
+      });
+      listEl.appendChild(div);
+    });
+  }).catch(function(err) {
+    listEl.innerHTML = '<div class="empty-state">Failed to load: ' + (err.message || err) + '</div>';
+  });
+}
+
+function formatEmailDate(iso) {
+  var d = new Date(iso);
+  var now = new Date();
+  if (d.toDateString() === now.toDateString()) {
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
+function formatEmailDateTime(iso) {
+  var d = new Date(iso);
+  return d.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' })
+    + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function openEmail(emailId) {
+  currentEmailId = emailId;
+  // Update active state in list
+  document.querySelectorAll('.email-list-item').forEach(function(el) { el.classList.remove('active'); });
+  // We find the clicked item by re-rendering will handle it, but for now just mark
+  event && event.currentTarget && event.currentTarget.classList.add('active');
+
+  var pane = document.getElementById('email-read-pane');
+  pane.innerHTML = '<div class="empty-state">Loading...</div>';
+
+  apiFetch('/api/email/read?id=' + encodeURIComponent(emailId)).then(function(email) {
+    var fromStr = (email.from && email.from.length > 0)
+      ? email.from.map(function(a) { return a.name ? a.name + ' <' + a.email + '>' : a.email; }).join(', ')
+      : 'Unknown';
+    var toStr = (email.to && email.to.length > 0)
+      ? email.to.map(function(a) { return a.name ? a.name + ' <' + a.email + '>' : a.email; }).join(', ')
+      : '';
+    var ccStr = (email.cc && email.cc.length > 0)
+      ? email.cc.map(function(a) { return a.name ? a.name + ' <' + a.email + '>' : a.email; }).join(', ')
+      : '';
+
+    // Action buttons
+    var html = '<div class="email-read-actions">';
+    html += '<button onmousedown="copyEmailToClipboard(event)">Copy</button>';
+    if (email.html_body) {
+      html += '<button onclick="viewEmailHtml(\'' + escapeHtml(emailId) + '\')">View HTML</button>';
+    }
+    html += '</div>';
+
+    // Body
+    var body = email.text_body || email.preview || '(no content)';
+    html += '<div class="email-read-body">' + escapeHtml(body) + '</div>';
+
+    pane.innerHTML = html;
+    // Store email data for chat injection and HTML viewing
+    pane._emailData = email;
+
+    // Mark as read in list
+    document.querySelectorAll('.email-list-item').forEach(function(el) {
+      el.classList.remove('active');
+    });
+    // Re-mark the correct one and remove unread
+    var items = document.querySelectorAll('.email-list-item');
+    items.forEach(function(el) {
+      var subj = el.querySelector('.email-item-subject');
+      if (subj && subj.textContent === (email.subject || '(no subject)')) {
+        el.classList.add('active');
+        el.classList.remove('unread');
+      }
+    });
+  }).catch(function(err) {
+    pane.innerHTML = '<div class="empty-state">Failed to load: ' + (err.message || err) + '</div>';
+  });
+}
+
+function escapeHtml(str) {
+  var div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+function copyEmailToClipboard(evt) {
+  evt.preventDefault(); // prevent mousedown from collapsing selection
+  var pane = document.getElementById('email-read-pane');
+  var email = pane._emailData;
+  if (!email) return;
+
+  // Check for text selection — if user highlighted something, copy only that
+  var selection = window.getSelection();
+  var selectedText = '';
+  if (selection && selection.rangeCount > 0 && !selection.isCollapsed) {
+    var range = selection.getRangeAt(0);
+    if (pane.contains(range.commonAncestorContainer)) {
+      selectedText = selection.toString().trim();
+    }
+  }
+
+  var text;
+  if (selectedText) {
+    text = selectedText;
+  } else {
+    var fromStr = (email.from && email.from.length > 0)
+      ? email.from.map(function(a) { return a.name ? a.name + ' <' + a.email + '>' : a.email; }).join(', ')
+      : 'Unknown';
+    var body = email.text_body || email.preview || '(no content)';
+    text = 'From: ' + fromStr
+      + '\nSubject: ' + (email.subject || '(no subject)')
+      + '\nDate: ' + (email.received_at ? new Date(email.received_at).toLocaleString() : 'unknown')
+      + '\n\n' + body;
+  }
+
+  navigator.clipboard.writeText(text).then(function() {
+    var btn = evt.target;
+    var orig = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(function() { btn.textContent = orig; }, 1500);
+  });
+}
+
+function viewEmailHtml(emailId) {
+  var pane = document.getElementById('email-read-pane');
+  var email = pane._emailData;
+  if (!email || !email.html_body) return;
+
+  document.getElementById('email-html-modal-title').textContent = email.subject || 'Email';
+  var frame = document.getElementById('email-html-frame');
+  frame.srcdoc = email.html_body;
+  var win = document.getElementById('email-html-modal');
+  win.style.display = 'flex';
+  initHtmlWindowDrag();
+}
+
+function closeEmailHtmlModal() {
+  document.getElementById('email-html-modal').style.display = 'none';
+  var frame = document.getElementById('email-html-frame');
+  frame.srcdoc = '';
+}
+
+function initHtmlWindowDrag() {
+  var titlebar = document.getElementById('email-html-titlebar');
+  if (titlebar._dragInit) return;
+  titlebar._dragInit = true;
+
+  var win = document.getElementById('email-html-modal');
+  titlebar.addEventListener('mousedown', function(e) {
+    if (e.target.tagName === 'BUTTON') return;
+    e.preventDefault();
+    var startX = e.clientX, startY = e.clientY;
+    var rect = win.getBoundingClientRect();
+    var origLeft = rect.left, origTop = rect.top;
+
+    // Disable iframe pointer events during drag
+    var frame = document.getElementById('email-html-frame');
+    frame.style.pointerEvents = 'none';
+
+    function onMove(e) {
+      win.style.left = (origLeft + e.clientX - startX) + 'px';
+      win.style.top = (origTop + e.clientY - startY) + 'px';
+    }
+    function onUp() {
+      frame.style.pointerEvents = '';
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+}
+
+// --- Email context menu ---
+
+function showEmailContextMenu(x, y, items) {
+  var menu = document.getElementById('email-context-menu');
+  menu.innerHTML = '';
+  items.forEach(function(item) {
+    var div = document.createElement('div');
+    div.className = 'email-context-menu-item' + (item.className ? ' ' + item.className : '');
+    div.textContent = item.label;
+    div.addEventListener('click', function() {
+      hideEmailContextMenu();
+      item.action();
+    });
+    menu.appendChild(div);
+  });
+  menu.style.left = x + 'px';
+  menu.style.top = y + 'px';
+  menu.style.display = 'block';
+
+  // Close on any click outside
+  setTimeout(function() {
+    document.addEventListener('click', hideEmailContextMenu, { once: true });
+  }, 0);
+}
+
+function hideEmailContextMenu() {
+  document.getElementById('email-context-menu').style.display = 'none';
+}
+
+function moveEmailToTrash(emailId) {
+  if (!trashMailboxId) return;
+  apiFetch('/api/email/move', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email_id: emailId, to_mailbox_id: trashMailboxId })
+  }).then(function() {
+    if (currentEmailId === emailId) {
+      currentEmailId = null;
+      document.getElementById('email-read-pane').innerHTML = '<div class="empty-state">Select an email to read</div>';
+    }
+    loadEmailList(currentMailboxId);
+    loadMailboxes();
+  }).catch(function(err) {
+    console.warn('[email] Move to trash failed:', err);
+  });
+}
+
+function deleteEmailPermanently(emailId) {
+  apiFetch('/api/email/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email_id: emailId })
+  }).then(function() {
+    if (currentEmailId === emailId) {
+      currentEmailId = null;
+      document.getElementById('email-read-pane').innerHTML = '<div class="empty-state">Select an email to read</div>';
+    }
+    loadEmailList(currentMailboxId);
+    loadMailboxes();
+  }).catch(function(err) {
+    console.warn('[email] Delete failed:', err);
+  });
+}
+
+function emptyTrash(mailboxId) {
+  if (!confirm('Permanently delete all emails in Trash?')) return;
+  apiFetch('/api/email/list?mailbox_id=' + encodeURIComponent(mailboxId) + '&limit=200').then(function(data) {
+    var emails = data.emails || [];
+    if (emails.length === 0) return;
+    var promises = emails.map(function(email) {
+      return apiFetch('/api/email/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email_id: email.id })
+      });
+    });
+    return Promise.all(promises);
+  }).then(function() {
+    currentEmailId = null;
+    document.getElementById('email-read-pane').innerHTML = '<div class="empty-state">Select an email to read</div>';
+    loadEmailList(currentMailboxId);
+    loadMailboxes();
+  }).catch(function(err) {
+    console.warn('[email] Empty trash failed:', err);
+  });
+}
+
+// --- Docs (FAQ/IAQ) ---
+
+function loadDocsTab(docType) {
+  var container = document.getElementById(docType + '-content');
+  container.innerHTML = '<div class="empty-state">Loading...</div>';
+
+  apiFetch('/api/docs/' + docType).then(function(data) {
+    var md = data.content || '';
+    container.innerHTML = renderMarkdownAccordion(md);
+  }).catch(function(err) {
+    container.innerHTML = '<div class="empty-state">Failed to load: ' + (err.message || err) + '</div>';
+  });
+}
+
+function renderMarkdownAccordion(md) {
+  var lines = md.split('\n');
+  var title = '';
+  var subtitle = '';
+  var sections = [];
+  var currentSection = null;
+
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i];
+    // Top-level heading
+    if (/^# /.test(line) && !title) {
+      title = line.replace(/^# /, '');
+      // Check if next non-empty line is not a heading — use as subtitle
+      for (var j = i + 1; j < lines.length; j++) {
+        if (lines[j].trim() === '') continue;
+        if (/^#/.test(lines[j])) break;
+        subtitle = lines[j].trim();
+        i = j;
+        break;
+      }
+      continue;
+    }
+    // Section heading (## )
+    if (/^## /.test(line)) {
+      if (currentSection) sections.push(currentSection);
+      currentSection = { title: line.replace(/^## /, ''), body: [] };
+      continue;
+    }
+    if (currentSection) {
+      currentSection.body.push(line);
+    }
+  }
+  if (currentSection) sections.push(currentSection);
+
+  var html = '';
+  if (title) html += '<h1>' + escapeHtml(title) + '</h1>';
+  if (subtitle) html += '<p class="docs-subtitle">' + escapeHtml(subtitle) + '</p>';
+
+  sections.forEach(function(sec) {
+    var bodyHtml = renderSimpleMarkdown(sec.body.join('\n').trim());
+    html += '<div class="docs-accordion-item">'
+      + '<div class="docs-accordion-header" onclick="this.parentElement.classList.toggle(\'open\')">'
+      + '<span class="docs-accordion-chevron">&#9654;</span>'
+      + escapeHtml(sec.title)
+      + '</div>'
+      + '<div class="docs-accordion-body">' + bodyHtml + '</div>'
+      + '</div>';
+  });
+
+  return html;
+}
+
+function renderSimpleMarkdown(text) {
+  if (!text) return '';
+  // Split into paragraphs on double newline
+  var blocks = text.split(/\n\n+/);
+  var html = '';
+
+  blocks.forEach(function(block) {
+    block = block.trim();
+    if (!block) return;
+
+    // Unordered list
+    if (/^[-*] /.test(block)) {
+      html += '<ul>';
+      block.split('\n').forEach(function(li) {
+        li = li.replace(/^[-*] /, '').trim();
+        if (li) html += '<li>' + inlineMarkdown(li) + '</li>';
+      });
+      html += '</ul>';
+      return;
+    }
+
+    // Ordered list
+    if (/^\d+\. /.test(block)) {
+      html += '<ol>';
+      block.split('\n').forEach(function(li) {
+        li = li.replace(/^\d+\.\s*/, '').trim();
+        if (li) html += '<li>' + inlineMarkdown(li) + '</li>';
+      });
+      html += '</ol>';
+      return;
+    }
+
+    html += '<p>' + inlineMarkdown(block.replace(/\n/g, ' ')) + '</p>';
+  });
+
+  return html;
+}
+
+function inlineMarkdown(text) {
+  // Bold
+  text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  // Italic
+  text = text.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  // Inline code
+  text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
+  // Links
+  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" style="color:var(--accent)">$1</a>');
+  // Em dash
+  text = text.replace(/ — /g, ' \u2014 ');
+  return text;
 }

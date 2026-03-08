@@ -28,7 +28,7 @@ impl EmailListTool {
 /// Accepts a raw JMAP mailbox ID, a role name (e.g. "inbox", "sent", "drafts"),
 /// or a mailbox display name (e.g. "Sent Items"). Falls back to using the
 /// input as-is if no match is found (lets the JMAP server return the error).
-async fn resolve_mailbox_id(
+pub async fn resolve_mailbox_id(
     provider: &dyn EmailProvider,
     input: &str,
 ) -> Result<String, ToolError> {

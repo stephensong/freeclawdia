@@ -103,6 +103,9 @@ cron = "0.13"
 # JMAP email client (for Stalwart and other JMAP servers)
 jmap-client = { version = "0.4", optional = true }
 
+# HTML to plain text conversion (for email)
+html2text = { version = "0.16", optional = true }
+
 # Safety/sanitization
 regex = "1"
 aho-corasick = "1"
@@ -204,7 +207,7 @@ postgres = [
 ]
 libsql = ["dep:libsql"]
 integration = []
-email = ["dep:jmap-client"]
+email = ["dep:jmap-client", "dep:html2text"]
 html-to-markdown = ["dep:html-to-markdown-rs", "dep:readabilityrs"]
 
 [[test]]
