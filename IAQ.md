@@ -41,6 +41,27 @@ E2E tests preferred over manual testing. Tests are cumulative and fast-fail — 
 - Email integration refinements (UI polish, agent email tools)
 - Web gateway UX improvements (context menus, splitters, floating windows)
 - Context retention via FAQ/IAQ documents
+- Time travel / temporal database (feature branch: `feature/time-travel`)
+
+## Time travel — temporal database design
+Inspired by Date & Darwen's temporal relational model and Datomic's immutable append-only architecture.
+
+**Core principle:** Agents operate in "now" — all writes go to the current epoch, all reads default to current state. The temporal layer is purely retrospective and read-only. Agent code needs zero changes. Time travel is a query-time concern, not a write-time concern.
+
+**Transaction time only** (not valid time). We care about "when was this fact recorded" not "when was this fact true in the world." This is the right model for an AI assistant's audit trail.
+
+**Phased approach:**
+- **Phase 1: Audit log** — New `audit_log` table capturing all mutations as JSON diffs. Pure INSERT, works on both PostgreSQL and libSQL. No changes to existing queries or agent code.
+- **Phase 2: Point-in-time reconstruction** — Replay audit log to reconstruct any entity's state at time T. Read-only "View as at" UI. Covers conversations, messages, settings, thread metadata.
+- **Phase 3: Native temporal tables** — PostgreSQL-only. System-versioned tables with `tstzrange` validity periods, GiST indexes, Date & Darwen's interval model. Only after Phase 2 is validated.
+
+**Key constraints:**
+- **Dual-backend:** Phase 1-2 work on both backends. Phase 3 is PostgreSQL-only (libSQL lacks range types).
+- **External state:** Email (Stalwart), MCP servers, WASM tools are not in our DB — time travel shows our recorded state, not external world state. UI must communicate this clearly.
+- **Storage:** Append-only means unbounded growth. Retention policies needed (e.g., compact >90 days).
+- **Scope guard:** Initial temporal entities are conversations + messages + settings only. Resist the temptation to make everything temporal at once.
+
+**UI concept:** "View system as at:" accepting a datetime, switching the entire view to historical read-only state.
 
 ## Future considerations
 - Anthropic API direct access (currently blocked by account login issues, using NEAR AI)
