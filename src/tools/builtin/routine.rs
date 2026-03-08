@@ -20,7 +20,7 @@ use crate::agent::routine::{
 };
 use crate::agent::routine_engine::RoutineEngine;
 use crate::context::JobContext;
-use crate::db::Database;
+use crate::db::{AuditInput, Database};
 use crate::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolOutput, require_str};
 
 // ==================== routine_create ====================
@@ -273,6 +273,20 @@ impl Tool for RoutineCreateTool {
             .await
             .map_err(|e| ToolError::ExecutionFailed(format!("failed to create routine: {e}")))?;
 
+        // Audit: routine created
+        let meta = serde_json::json!({
+            "name": routine.name,
+            "trigger_type": routine.trigger.type_tag(),
+        });
+        let _ = self
+            .store
+            .audit_log(AuditInput {
+                user_id: &ctx.user_id, entity_type: "routine",
+                entity_id: &routine.id.to_string(), action: "create",
+                field: None, old_value: None, new_value: Some(&meta), metadata: None,
+            })
+            .await;
+
         // Refresh event cache if this is an event trigger
         if routine.trigger.type_tag() == "event" {
             self.engine.refresh_event_cache().await;
@@ -469,6 +483,20 @@ impl Tool for RoutineUpdateTool {
             .await
             .map_err(|e| ToolError::ExecutionFailed(format!("failed to update: {e}")))?;
 
+        // Audit: routine updated
+        let new_val = serde_json::json!({
+            "enabled": routine.enabled,
+            "trigger_type": routine.trigger.type_tag(),
+        });
+        let _ = self
+            .store
+            .audit_log(AuditInput {
+                user_id: &ctx.user_id, entity_type: "routine",
+                entity_id: &routine.id.to_string(), action: "update",
+                field: None, old_value: None, new_value: Some(&new_val), metadata: None,
+            })
+            .await;
+
         // Refresh event cache in case trigger changed
         self.engine.refresh_event_cache().await;
 
@@ -545,6 +573,18 @@ impl Tool for RoutineDeleteTool {
             .delete_routine(routine.id)
             .await
             .map_err(|e| ToolError::ExecutionFailed(format!("failed to delete: {e}")))?;
+
+        // Audit: routine deleted
+        if deleted {
+            let _ = self
+                .store
+                .audit_log(AuditInput {
+                    user_id: &ctx.user_id, entity_type: "routine",
+                    entity_id: &routine.id.to_string(), action: "delete",
+                    field: None, old_value: None, new_value: None, metadata: None,
+                })
+                .await;
+        }
 
         // Refresh event cache
         self.engine.refresh_event_cache().await;

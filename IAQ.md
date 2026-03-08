@@ -59,11 +59,50 @@ Inspired by Date & Darwen's temporal relational model and Datomic's immutable ap
 - **Dual-backend:** Phase 1-2 work on both backends. Phase 3 is PostgreSQL-only (libSQL lacks range types).
 - **External state:** Email (Stalwart), MCP servers, WASM tools are not in our DB — time travel shows our recorded state, not external world state. UI must communicate this clearly.
 - **Storage:** Append-only means unbounded growth. Retention policies needed (e.g., compact >90 days).
-- **Scope guard:** Initial temporal entities are conversations + messages + settings only. Resist the temptation to make everything temporal at once.
+
+**Audited entity types (entity_type values):**
+- `setting` — Settings CRUD (entity_id = setting key)
+- `conversation` — Thread create/rename/delete (entity_id = conversation UUID)
+- `extension` — Extension install/remove/activate (entity_id = extension name)
+- `skill` — Skill install/remove (entity_id = skill name)
+- `routine` — Routine create/update/delete/toggle (entity_id = routine UUID)
+- `secret` — Secret create/delete (entity_id = secret name; values are NEVER logged)
+
+**Audit integration pattern:** Fire-and-forget — `audit_log()` is awaited but errors are only logged (via `tracing::warn!`), never propagated. This ensures the audit layer never blocks or breaks normal operations. The `AuditInput` struct bundles all fields to avoid too-many-arguments warnings.
 
 **UI concept:** "View system as at:" accepting a datetime, switching the entire view to historical read-only state.
+
+## Time travel — implementation status
+**Branch:** `feature/time-travel`
+
+**Phase 1 (complete):**
+- `audit_log` PostgreSQL table with indexes on ts, entity, user
+- `AuditStore` trait with `audit_log()`, `audit_history()`, `audit_as_at()` methods
+- PostgreSQL implementation in `src/history/store.rs`
+- libSQL no-op stubs (time travel is PostgreSQL-only for now)
+- Audit hooks in settings handlers and thread management handlers
+
+**Phase 2 (complete):**
+- History tab in web UI with timeline display
+- "View system as at:" datetime picker with Travel/Reset controls
+- Settings reconstruction endpoint (`/api/audit/reconstruct/settings`)
+- Timeline API with entity_type filtering (`/api/audit/timeline`)
+- Entity-specific history API (`/api/audit/history`)
+- Visual diff display (old → new values) in timeline events
+
+**Phase 2b (in progress):**
+- Broadening audit coverage to extensions, skills, routines, secrets
+- These are higher-value audit targets than workspace memory writes
+
+**Phase 3 (future):**
+- Native PostgreSQL temporal tables with `tstzrange` validity periods
+- Only after Phase 2 is fully validated in production use
+
+**Tests:** 10 integration tests in `tests/time_travel_integration.rs` covering audit log CRUD, multi-epoch reconstruction, conversation lifecycle, interleaved mutations, rapid-fire ordering, overwrite chains, entity scoping, JSON preservation, metadata, and limits.
 
 ## Future considerations
 - Anthropic API direct access (currently blocked by account login issues, using NEAR AI)
 - Gmail extension integration possibility
 - Further email UI enhancements
+- Time travel retention policies (compact audit entries >90 days)
+- Reconstruct more entity types beyond settings (threads, extensions, routines)

@@ -10,6 +10,7 @@ use axum::{
 
 use crate::channels::web::server::GatewayState;
 use crate::channels::web::types::*;
+use crate::db::AuditInput;
 
 pub async fn skills_list_handler(
     State(state): State<Arc<GatewayState>>,
@@ -201,18 +202,33 @@ pub async fn skills_install_handler(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // Commit: brief write lock for in-memory addition
-    let mut guard = registry.write().map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Skill registry lock poisoned: {}", e),
-        )
-    })?;
+    let install_result = {
+        let mut guard = registry.write().map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Skill registry lock poisoned: {}", e),
+            )
+        })?;
+        guard.commit_install(&skill_name, loaded_skill)
+    };
 
-    match guard.commit_install(&skill_name, loaded_skill) {
-        Ok(()) => Ok(Json(ActionResponse::ok(format!(
-            "Skill '{}' installed",
-            skill_name
-        )))),
+    match install_result {
+        Ok(()) => {
+            // Audit: skill installed (guard dropped, safe to await)
+            if let Some(ref store) = state.store {
+                let _ = store
+                    .audit_log(AuditInput {
+                        user_id: &state.user_id, entity_type: "skill",
+                        entity_id: &skill_name, action: "install",
+                        field: None, old_value: None, new_value: None, metadata: None,
+                    })
+                    .await;
+            }
+            Ok(Json(ActionResponse::ok(format!(
+                "Skill '{}' installed",
+                skill_name
+            ))))
+        }
         Err(e) => Ok(Json(ActionResponse::fail(e.to_string()))),
     }
 }
@@ -258,18 +274,33 @@ pub async fn skills_remove_handler(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // Remove from in-memory registry under a brief write lock
-    let mut guard = registry.write().map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Skill registry lock poisoned: {}", e),
-        )
-    })?;
+    let remove_result = {
+        let mut guard = registry.write().map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Skill registry lock poisoned: {}", e),
+            )
+        })?;
+        guard.commit_remove(&name)
+    };
 
-    match guard.commit_remove(&name) {
-        Ok(()) => Ok(Json(ActionResponse::ok(format!(
-            "Skill '{}' removed",
-            name
-        )))),
+    match remove_result {
+        Ok(()) => {
+            // Audit: skill removed (guard dropped, safe to await)
+            if let Some(ref store) = state.store {
+                let _ = store
+                    .audit_log(AuditInput {
+                        user_id: &state.user_id, entity_type: "skill",
+                        entity_id: &name, action: "delete",
+                        field: None, old_value: None, new_value: None, metadata: None,
+                    })
+                    .await;
+            }
+            Ok(Json(ActionResponse::ok(format!(
+                "Skill '{}' removed",
+                name
+            ))))
+        }
         Err(e) => Ok(Json(ActionResponse::fail(e.to_string()))),
     }
 }

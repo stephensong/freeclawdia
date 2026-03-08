@@ -26,3 +26,9 @@ Yes. Secrets are encrypted with AES-256-GCM, stored locally, and never exposed t
 
 ## How do I add new tools?
 Tools can be built as WASM modules (sandboxed) or connected via MCP servers. Use `freeclawdia tool install` or the Extensions tab in the web UI.
+
+## What is Time Travel?
+The History tab lets you view the system's state at any point in the past. Set a date and time, click "Travel", and you'll see a reconstructed snapshot of settings, plus a timeline of every change that was recorded up to that moment. It's read-only — you're looking at the past, not changing it.
+
+## What gets recorded in the History?
+Changes to settings, threads (create/rename/delete), extensions (install/remove/activate), skills (install/remove), routines (create/update/delete/toggle), and secret management events. Email and external services are not tracked — the history reflects Clawdia's internal state only.

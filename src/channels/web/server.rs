@@ -2309,6 +2309,19 @@ async fn extensions_install_handler(
         .await
     {
         Ok(result) => {
+            // Audit: extension installed
+            if let Some(ref store) = state.store {
+                let kind_val = serde_json::json!(format!("{:?}", result.kind));
+                let _ = store
+                    .audit_log(AuditInput {
+                        user_id: &state.user_id, entity_type: "extension",
+                        entity_id: &req.name, action: "install",
+                        field: Some("kind"), old_value: None, new_value: Some(&kind_val),
+                        metadata: None,
+                    })
+                    .await;
+            }
+
             let mut resp = ActionResponse::ok(result.message);
 
             // Auto-activate WASM tools after install (install = active).
@@ -2351,6 +2364,17 @@ async fn extensions_activate_handler(
 
     match ext_mgr.activate(&name).await {
         Ok(result) => {
+            // Audit: extension activated
+            if let Some(ref store) = state.store {
+                let _ = store
+                    .audit_log(AuditInput {
+                        user_id: &state.user_id, entity_type: "extension",
+                        entity_id: &name, action: "activate",
+                        field: None, old_value: None, new_value: None, metadata: None,
+                    })
+                    .await;
+            }
+
             // Activation loaded the WASM module. Check if the tool needs
             // OAuth scope expansion (e.g., adding google-docs when gmail
             // already has a token but missing the documents scope).
@@ -2474,7 +2498,19 @@ async fn extensions_remove_handler(
     ))?;
 
     match ext_mgr.remove(&name).await {
-        Ok(message) => Ok(Json(ActionResponse::ok(message))),
+        Ok(message) => {
+            // Audit: extension removed
+            if let Some(ref store) = state.store {
+                let _ = store
+                    .audit_log(AuditInput {
+                        user_id: &state.user_id, entity_type: "extension",
+                        entity_id: &name, action: "delete",
+                        field: None, old_value: None, new_value: None, metadata: None,
+                    })
+                    .await;
+            }
+            Ok(Json(ActionResponse::ok(message)))
+        }
         Err(e) => Ok(Json(ActionResponse::fail(e.to_string()))),
     }
 }
@@ -2582,6 +2618,19 @@ async fn extensions_setup_submit_handler(
 
     match ext_mgr.save_setup_secrets(&name, &req.secrets).await {
         Ok(result) => {
+            // Audit: secrets saved for extension (log key names only, never values)
+            if let Some(ref store) = state.store {
+                let secret_names: Vec<&str> = req.secrets.keys().map(|k| k.as_str()).collect();
+                let meta = serde_json::json!({ "keys": secret_names });
+                let _ = store
+                    .audit_log(AuditInput {
+                        user_id: &state.user_id, entity_type: "secret",
+                        entity_id: &name, action: "create",
+                        field: None, old_value: None, new_value: None, metadata: Some(&meta),
+                    })
+                    .await;
+            }
+
             // Broadcast auth_completed so the chat UI can dismiss any in-progress
             // auth card or setup modal that was triggered by tool_auth/tool_activate.
             state.sse.broadcast(SseEvent::AuthCompleted {
@@ -2845,6 +2894,18 @@ async fn routines_toggle_handler(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
+    // Audit: routine toggled
+    let new_val = serde_json::json!(routine.enabled);
+    let old_val = serde_json::json!(!routine.enabled);
+    let _ = store
+        .audit_log(AuditInput {
+            user_id: &state.user_id, entity_type: "routine",
+            entity_id: &routine_id.to_string(), action: "update",
+            field: Some("enabled"), old_value: Some(&old_val), new_value: Some(&new_val),
+            metadata: None,
+        })
+        .await;
+
     Ok(Json(serde_json::json!({
         "status": if routine.enabled { "enabled" } else { "disabled" },
         "routine_id": routine_id,
@@ -2869,6 +2930,15 @@ async fn routines_delete_handler(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     if deleted {
+        // Audit: routine deleted
+        let _ = store
+            .audit_log(AuditInput {
+                user_id: &state.user_id, entity_type: "routine",
+                entity_id: &routine_id.to_string(), action: "delete",
+                field: None, old_value: None, new_value: None, metadata: None,
+            })
+            .await;
+
         Ok(Json(serde_json::json!({
             "status": "deleted",
             "routine_id": routine_id,

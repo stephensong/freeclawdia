@@ -16,6 +16,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::context::JobContext;
+use crate::db::{AuditInput, Database};
 use crate::secrets::SecretsStore;
 use crate::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolOutput, require_str};
 
@@ -87,11 +88,17 @@ impl Tool for SecretListTool {
 
 pub struct SecretDeleteTool {
     store: Arc<dyn SecretsStore + Send + Sync>,
+    db: Option<Arc<dyn Database>>,
 }
 
 impl SecretDeleteTool {
     pub fn new(store: Arc<dyn SecretsStore + Send + Sync>) -> Self {
-        Self { store }
+        Self { store, db: None }
+    }
+
+    pub fn with_db(mut self, db: Arc<dyn Database>) -> Self {
+        self.db = Some(db);
+        self
     }
 }
 
@@ -134,6 +141,16 @@ impl Tool for SecretDeleteTool {
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
 
         let output = if deleted {
+            // Audit: secret deleted (never log the value)
+            if let Some(ref db) = self.db {
+                let _ = db
+                    .audit_log(AuditInput {
+                        user_id: &ctx.user_id, entity_type: "secret",
+                        entity_id: name, action: "delete",
+                        field: None, old_value: None, new_value: None, metadata: None,
+                    })
+                    .await;
+            }
             serde_json::json!({
                 "status": "deleted",
                 "name": name,

@@ -4,11 +4,16 @@
 //! Tests are cumulative: each test builds on the state left by previous tests,
 //! verifying that we can reconstruct the system at any prior epoch.
 //!
-//! Requires a running PostgreSQL. Set DATABASE_URL=postgres://localhost/ironclaw_test
+//! Requires a running PostgreSQL. Set DATABASE_URL to a test database, e.g.:
+//!   DATABASE_URL=postgres://localhost/clawdia_test_gary
 //!
-//! The tests record epoch timestamps between operations, then use audit_as_at()
-//! to verify that the audit log accurately captures every mutation, and that
-//! state can be reconstructed by replaying the log.
+//! SAFETY: Tests refuse to run against any database whose name does not contain
+//! "_test". This prevents accidental data loss on production databases.
+//!
+//! Fixture mode (`make fixture`): distributes tests across 3 databases:
+//!   clawdia_test_gary — tests 01-05 (settings, conversations, audit basics)
+//!   clawdia_test_emma — tests 06-10 (reconstruction, scoping, complex values)
+//!   clawdia_test_oli — tests 11-16 (extensions, skills, routines, secrets)
 
 use std::collections::HashMap;
 
@@ -20,9 +25,34 @@ use ironclaw::db::{AuditInput, AuditStore, ConversationStore, Database, Settings
 
 const TEST_USER: &str = "time_travel_test_user";
 
+/// Extract the database name from a PostgreSQL URL for safety checks.
+fn db_name_from_url(url: &str) -> String {
+    // Handle both formats:
+    //   postgres://user@host/dbname
+    //   postgres://user@%2Fvar%2Frun%2Fpostgresql/dbname
+    url.rsplit('/')
+        .next()
+        .unwrap_or("")
+        .split('?')
+        .next()
+        .unwrap_or("")
+        .to_string()
+}
+
 async fn setup() -> Option<PgBackend> {
     let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://localhost/ironclaw_test".to_string());
+        .unwrap_or_else(|_| "postgres://localhost/clawdia_test_gary".to_string());
+
+    // SAFETY: refuse to run against production databases
+    let db_name = db_name_from_url(&url);
+    if !db_name.contains("_test") {
+        panic!(
+            "SAFETY: refusing to run tests against database '{}' — \
+             name must contain '_test'. Set DATABASE_URL to a test database \
+             (e.g., clawdia_test_gary).",
+            db_name
+        );
+    }
 
     let config = DatabaseConfig {
         backend: DatabaseBackend::Postgres,
@@ -45,10 +75,27 @@ async fn setup() -> Option<PgBackend> {
     Some(backend)
 }
 
-async fn cleanup(db: &PgBackend) {
+/// Returns true if FIXTURE_MODE=1 is set — tests leave data behind for inspection.
+fn fixture_mode() -> bool {
+    std::env::var("FIXTURE_MODE").is_ok_and(|v| v == "1")
+}
+
+/// Called at test start — always runs (each test needs a clean slate).
+async fn cleanup_before(db: &PgBackend) {
+    do_cleanup(db).await;
+}
+
+/// Called at test end — skipped in fixture mode so data persists for inspection/E2E.
+async fn cleanup_after(db: &PgBackend) {
+    if fixture_mode() {
+        return;
+    }
+    do_cleanup(db).await;
+}
+
+async fn do_cleanup(db: &PgBackend) {
     let pool = db.pool();
     let conn = pool.get().await.expect("cleanup connection");
-    // Clean up test data
     conn.execute(
         "DELETE FROM audit_log WHERE user_id = $1",
         &[&TEST_USER],
@@ -93,7 +140,7 @@ async fn test_01_audit_log_captures_settings_mutations() {
         Some(db) => db,
         None => return,
     };
-    cleanup(&db).await;
+    cleanup_before(&db).await;
 
     // Epoch 0: empty state
     let epoch0 = now();
@@ -180,7 +227,7 @@ async fn test_01_audit_log_captures_settings_mutations() {
     let at_epoch3 = db.audit_as_at(epoch3, Some("setting"), 100).await.unwrap();
     assert_eq!(at_epoch3.len(), 3, "3 entries at epoch3");
 
-    cleanup(&db).await;
+    cleanup_after(&db).await;
 }
 
 // =============================================================================
@@ -192,7 +239,7 @@ async fn test_02_reconstruct_settings_at_epochs() {
         Some(db) => db,
         None => return,
     };
-    cleanup(&db).await;
+    cleanup_before(&db).await;
 
     let epoch0 = now();
     tick().await;
@@ -300,7 +347,7 @@ async fn test_02_reconstruct_settings_at_epochs() {
         assert_eq!(current.get(k).unwrap(), v, "Key '{}' matches", k);
     }
 
-    cleanup(&db).await;
+    cleanup_after(&db).await;
 }
 
 /// Helper: replay audit log to reconstruct settings at a given time.
@@ -345,7 +392,7 @@ async fn test_03_audit_conversation_lifecycle() {
         Some(db) => db,
         None => return,
     };
-    cleanup(&db).await;
+    cleanup_before(&db).await;
 
     let epoch0 = now();
     tick().await;
@@ -452,7 +499,7 @@ async fn test_03_audit_conversation_lifecycle() {
         .unwrap();
     assert_eq!(at3.len(), 3, "3 events at epoch3");
 
-    cleanup(&db).await;
+    cleanup_after(&db).await;
 }
 
 // =============================================================================
@@ -464,7 +511,7 @@ async fn test_04_interleaved_mutations_multi_entity() {
         Some(db) => db,
         None => return,
     };
-    cleanup(&db).await;
+    cleanup_before(&db).await;
 
     // === Wave 1: create settings and a conversation ===
     let epoch_start = now();
@@ -645,7 +692,7 @@ async fn test_04_interleaved_mutations_multi_entity() {
         .collect();
     assert_eq!(convos_test.len(), 3, "3 conversation events total");
 
-    cleanup(&db).await;
+    cleanup_after(&db).await;
 }
 
 // =============================================================================
@@ -657,7 +704,7 @@ async fn test_05_rapid_mutations_preserve_order() {
         Some(db) => db,
         None => return,
     };
-    cleanup(&db).await;
+    cleanup_before(&db).await;
 
     // Create 20 settings in rapid succession
     for i in 0..20 {
@@ -700,7 +747,7 @@ async fn test_05_rapid_mutations_preserve_order() {
         .collect();
     assert_eq!(rapid_keys.len(), 20, "All 20 settings reconstructed");
 
-    cleanup(&db).await;
+    cleanup_after(&db).await;
 }
 
 // =============================================================================
@@ -712,7 +759,7 @@ async fn test_06_overwrite_chain_reconstruction() {
         Some(db) => db,
         None => return,
     };
-    cleanup(&db).await;
+    cleanup_before(&db).await;
 
     let mut epochs = vec![now()];
     tick().await;
@@ -766,7 +813,7 @@ async fn test_06_overwrite_chain_reconstruction() {
     let history = db.audit_history("setting", "counter", 100).await.unwrap();
     assert_eq!(history.len(), 10);
 
-    cleanup(&db).await;
+    cleanup_after(&db).await;
 }
 
 // =============================================================================
@@ -778,7 +825,7 @@ async fn test_07_audit_history_entity_scoped() {
         Some(db) => db,
         None => return,
     };
-    cleanup(&db).await;
+    cleanup_before(&db).await;
 
     // Create two different settings
     for (key, val) in [("alpha", "a"), ("beta", "b")] {
@@ -836,7 +883,7 @@ async fn test_07_audit_history_entity_scoped() {
         .unwrap();
     assert_eq!(empty.len(), 0);
 
-    cleanup(&db).await;
+    cleanup_after(&db).await;
 }
 
 // =============================================================================
@@ -848,7 +895,7 @@ async fn test_08_old_new_values_preserved() {
         Some(db) => db,
         None => return,
     };
-    cleanup(&db).await;
+    cleanup_before(&db).await;
 
     let complex_val = serde_json::json!({
         "nested": { "key": "value", "list": [1, 2, 3] },
@@ -908,7 +955,7 @@ async fn test_08_old_new_values_preserved() {
     assert!(create_entry.old_value.is_none());
     assert_eq!(create_entry.new_value.as_ref().unwrap(), &complex_val);
 
-    cleanup(&db).await;
+    cleanup_after(&db).await;
 }
 
 // =============================================================================
@@ -920,7 +967,7 @@ async fn test_09_metadata_stored() {
         Some(db) => db,
         None => return,
     };
-    cleanup(&db).await;
+    cleanup_before(&db).await;
 
     let meta = serde_json::json!({ "source": "web_ui", "ip": "127.0.0.1" });
 
@@ -944,7 +991,7 @@ async fn test_09_metadata_stored() {
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].metadata.as_ref().unwrap(), &meta);
 
-    cleanup(&db).await;
+    cleanup_after(&db).await;
 }
 
 // =============================================================================
@@ -956,7 +1003,7 @@ async fn test_10_limit_respected() {
         Some(db) => db,
         None => return,
     };
-    cleanup(&db).await;
+    cleanup_before(&db).await;
 
     // Create 15 entries
     for i in 0..15 {
@@ -993,5 +1040,594 @@ async fn test_10_limit_respected() {
         .collect();
     assert_eq!(ours.len(), 15, "All 15 entries present with high limit");
 
-    cleanup(&db).await;
+    cleanup_after(&db).await;
+}
+
+// =============================================================================
+// Test 11: Extension lifecycle audit (install → activate → remove)
+// =============================================================================
+#[tokio::test]
+async fn test_11_extension_lifecycle_audit() {
+    let db = match setup().await {
+        Some(db) => db,
+        None => return,
+    };
+    cleanup_before(&db).await;
+
+    let epoch0 = now();
+    tick().await;
+
+    // Install extension
+    let kind_val = serde_json::json!("WasmTool");
+    db.audit_log(AuditInput {
+        user_id: TEST_USER,
+        entity_type: "extension",
+        entity_id: "weather-tool",
+        action: "install",
+        field: Some("kind"),
+        old_value: None,
+        new_value: Some(&kind_val),
+        metadata: None,
+    })
+    .await
+    .unwrap();
+
+    let epoch1 = now();
+    tick().await;
+
+    // Activate extension
+    db.audit_log(AuditInput {
+        user_id: TEST_USER,
+        entity_type: "extension",
+        entity_id: "weather-tool",
+        action: "activate",
+        field: None,
+        old_value: None,
+        new_value: None,
+        metadata: None,
+    })
+    .await
+    .unwrap();
+
+    let epoch2 = now();
+    tick().await;
+
+    // Remove extension
+    db.audit_log(AuditInput {
+        user_id: TEST_USER,
+        entity_type: "extension",
+        entity_id: "weather-tool",
+        action: "delete",
+        field: None,
+        old_value: None,
+        new_value: None,
+        metadata: None,
+    })
+    .await
+    .unwrap();
+
+    let epoch3 = now();
+
+    // Verify full history
+    let history = db
+        .audit_history("extension", "weather-tool", 100)
+        .await
+        .unwrap();
+    assert_eq!(history.len(), 3);
+    assert_eq!(history[0].action, "delete");
+    assert_eq!(history[1].action, "activate");
+    assert_eq!(history[2].action, "install");
+
+    // At epoch0: no extension events
+    let at0 = db
+        .audit_as_at(epoch0, Some("extension"), 100)
+        .await
+        .unwrap();
+    let ext0: Vec<_> = at0.iter().filter(|e| e.entity_id == "weather-tool").collect();
+    assert!(ext0.is_empty());
+
+    // At epoch1: only install
+    let at1 = db
+        .audit_as_at(epoch1, Some("extension"), 100)
+        .await
+        .unwrap();
+    let ext1: Vec<_> = at1.iter().filter(|e| e.entity_id == "weather-tool").collect();
+    assert_eq!(ext1.len(), 1);
+    assert_eq!(ext1[0].action, "install");
+    assert_eq!(ext1[0].new_value.as_ref().unwrap(), &kind_val);
+
+    // At epoch2: install + activate
+    let at2 = db
+        .audit_as_at(epoch2, Some("extension"), 100)
+        .await
+        .unwrap();
+    let ext2: Vec<_> = at2.iter().filter(|e| e.entity_id == "weather-tool").collect();
+    assert_eq!(ext2.len(), 2);
+
+    // At epoch3: all 3
+    let at3 = db
+        .audit_as_at(epoch3, Some("extension"), 100)
+        .await
+        .unwrap();
+    let ext3: Vec<_> = at3.iter().filter(|e| e.entity_id == "weather-tool").collect();
+    assert_eq!(ext3.len(), 3);
+
+    cleanup_after(&db).await;
+}
+
+// =============================================================================
+// Test 12: Skill install/remove audit
+// =============================================================================
+#[tokio::test]
+async fn test_12_skill_install_remove_audit() {
+    let db = match setup().await {
+        Some(db) => db,
+        None => return,
+    };
+    cleanup_before(&db).await;
+
+    // Install two skills
+    db.audit_log(AuditInput {
+        user_id: TEST_USER,
+        entity_type: "skill",
+        entity_id: "deploy-k8s",
+        action: "install",
+        field: None,
+        old_value: None,
+        new_value: None,
+        metadata: None,
+    })
+    .await
+    .unwrap();
+
+    tick().await;
+
+    db.audit_log(AuditInput {
+        user_id: TEST_USER,
+        entity_type: "skill",
+        entity_id: "code-review",
+        action: "install",
+        field: None,
+        old_value: None,
+        new_value: None,
+        metadata: None,
+    })
+    .await
+    .unwrap();
+
+    let after_installs = now();
+    tick().await;
+
+    // Remove one skill
+    db.audit_log(AuditInput {
+        user_id: TEST_USER,
+        entity_type: "skill",
+        entity_id: "deploy-k8s",
+        action: "delete",
+        field: None,
+        old_value: None,
+        new_value: None,
+        metadata: None,
+    })
+    .await
+    .unwrap();
+
+    // deploy-k8s has install + delete
+    let history = db
+        .audit_history("skill", "deploy-k8s", 100)
+        .await
+        .unwrap();
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[0].action, "delete");
+    assert_eq!(history[1].action, "install");
+
+    // code-review has only install
+    let history2 = db
+        .audit_history("skill", "code-review", 100)
+        .await
+        .unwrap();
+    assert_eq!(history2.len(), 1);
+    assert_eq!(history2[0].action, "install");
+
+    // At after_installs epoch: both skills installed, no deletes yet
+    let at_installs = db
+        .audit_as_at(after_installs, Some("skill"), 100)
+        .await
+        .unwrap();
+    let skills: Vec<_> = at_installs
+        .iter()
+        .filter(|e| e.user_id == TEST_USER)
+        .collect();
+    assert_eq!(skills.len(), 2);
+    assert!(skills.iter().all(|e| e.action == "install"));
+
+    cleanup_after(&db).await;
+}
+
+// =============================================================================
+// Test 13: Routine lifecycle audit (create → update → toggle → delete)
+// =============================================================================
+#[tokio::test]
+async fn test_13_routine_lifecycle_audit() {
+    let db = match setup().await {
+        Some(db) => db,
+        None => return,
+    };
+    cleanup_before(&db).await;
+
+    let routine_id = uuid::Uuid::new_v4().to_string();
+
+    // Create
+    let create_meta = serde_json::json!({
+        "name": "daily-digest",
+        "trigger_type": "cron",
+    });
+    db.audit_log(AuditInput {
+        user_id: TEST_USER,
+        entity_type: "routine",
+        entity_id: &routine_id,
+        action: "create",
+        field: None,
+        old_value: None,
+        new_value: Some(&create_meta),
+        metadata: None,
+    })
+    .await
+    .unwrap();
+
+    let after_create = now();
+    tick().await;
+
+    // Update
+    let update_val = serde_json::json!({
+        "enabled": true,
+        "trigger_type": "cron",
+    });
+    db.audit_log(AuditInput {
+        user_id: TEST_USER,
+        entity_type: "routine",
+        entity_id: &routine_id,
+        action: "update",
+        field: None,
+        old_value: None,
+        new_value: Some(&update_val),
+        metadata: None,
+    })
+    .await
+    .unwrap();
+
+    tick().await;
+
+    // Toggle (disable)
+    let old_enabled = serde_json::json!(true);
+    let new_enabled = serde_json::json!(false);
+    db.audit_log(AuditInput {
+        user_id: TEST_USER,
+        entity_type: "routine",
+        entity_id: &routine_id,
+        action: "update",
+        field: Some("enabled"),
+        old_value: Some(&old_enabled),
+        new_value: Some(&new_enabled),
+        metadata: None,
+    })
+    .await
+    .unwrap();
+
+    let after_toggle = now();
+    tick().await;
+
+    // Delete
+    db.audit_log(AuditInput {
+        user_id: TEST_USER,
+        entity_type: "routine",
+        entity_id: &routine_id,
+        action: "delete",
+        field: None,
+        old_value: None,
+        new_value: None,
+        metadata: None,
+    })
+    .await
+    .unwrap();
+
+    // Full history: 4 entries (delete, toggle, update, create) in reverse chronological
+    let history = db
+        .audit_history("routine", &routine_id, 100)
+        .await
+        .unwrap();
+    assert_eq!(history.len(), 4);
+    assert_eq!(history[0].action, "delete");
+    assert_eq!(history[1].action, "update"); // toggle
+    assert_eq!(history[1].field.as_deref(), Some("enabled"));
+    assert_eq!(history[2].action, "update"); // general update
+    assert_eq!(history[3].action, "create");
+
+    // At after_create: only 1 entry
+    let at_create = db
+        .audit_as_at(after_create, Some("routine"), 100)
+        .await
+        .unwrap();
+    let r_create: Vec<_> = at_create
+        .iter()
+        .filter(|e| e.entity_id == routine_id)
+        .collect();
+    assert_eq!(r_create.len(), 1);
+    assert_eq!(r_create[0].action, "create");
+    assert_eq!(r_create[0].new_value.as_ref().unwrap(), &create_meta);
+
+    // At after_toggle: 3 entries (create + update + toggle)
+    let at_toggle = db
+        .audit_as_at(after_toggle, Some("routine"), 100)
+        .await
+        .unwrap();
+    let r_toggle: Vec<_> = at_toggle
+        .iter()
+        .filter(|e| e.entity_id == routine_id)
+        .collect();
+    assert_eq!(r_toggle.len(), 3);
+
+    cleanup_after(&db).await;
+}
+
+// =============================================================================
+// Test 14: Secret create/delete audit (values never logged)
+// =============================================================================
+#[tokio::test]
+async fn test_14_secret_audit_no_values_leaked() {
+    let db = match setup().await {
+        Some(db) => db,
+        None => return,
+    };
+    cleanup_before(&db).await;
+
+    // Create secret (via extension setup) — log key names, never values
+    let meta = serde_json::json!({ "keys": ["api_key", "api_secret"] });
+    db.audit_log(AuditInput {
+        user_id: TEST_USER,
+        entity_type: "secret",
+        entity_id: "weather-api",
+        action: "create",
+        field: None,
+        old_value: None,
+        new_value: None, // deliberately no value — zero-exposure
+        metadata: Some(&meta),
+    })
+    .await
+    .unwrap();
+
+    tick().await;
+
+    // Delete secret
+    db.audit_log(AuditInput {
+        user_id: TEST_USER,
+        entity_type: "secret",
+        entity_id: "weather-api",
+        action: "delete",
+        field: None,
+        old_value: None,
+        new_value: None,
+        metadata: None,
+    })
+    .await
+    .unwrap();
+
+    let history = db
+        .audit_history("secret", "weather-api", 100)
+        .await
+        .unwrap();
+    assert_eq!(history.len(), 2);
+
+    // Verify: no old_value or new_value ever contains secret data
+    for entry in &history {
+        assert!(
+            entry.old_value.is_none(),
+            "Secret audit must never store old_value"
+        );
+        assert!(
+            entry.new_value.is_none(),
+            "Secret audit must never store new_value"
+        );
+    }
+
+    // Create entry has metadata with key names
+    let create_entry = &history[1]; // older first in reverse
+    assert_eq!(create_entry.action, "create");
+    let keys = create_entry.metadata.as_ref().unwrap();
+    let key_names: Vec<&str> = keys["keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(key_names, vec!["api_key", "api_secret"]);
+
+    cleanup_after(&db).await;
+}
+
+// =============================================================================
+// Test 15: Mixed entity types in timeline — filter by entity_type
+// =============================================================================
+#[tokio::test]
+async fn test_15_mixed_entity_types_filtered() {
+    let db = match setup().await {
+        Some(db) => db,
+        None => return,
+    };
+    cleanup_before(&db).await;
+
+    // Insert one of each entity type
+    let types = vec![
+        ("setting", "theme", "create"),
+        ("extension", "gmail", "install"),
+        ("skill", "deploy", "install"),
+        ("routine", "abc-123", "create"),
+        ("secret", "my-key", "create"),
+        ("conversation", "def-456", "create"),
+    ];
+
+    for (etype, eid, action) in &types {
+        db.audit_log(AuditInput {
+            user_id: TEST_USER,
+            entity_type: etype,
+            entity_id: eid,
+            action,
+            field: None,
+            old_value: None,
+            new_value: None,
+            metadata: None,
+        })
+        .await
+        .unwrap();
+        tick().await;
+    }
+
+    let after_all = now();
+
+    // Unfiltered: all 6
+    let all = db
+        .audit_as_at(after_all, None, 100)
+        .await
+        .unwrap();
+    let ours: Vec<_> = all.iter().filter(|e| e.user_id == TEST_USER).collect();
+    assert_eq!(ours.len(), 6);
+
+    // Filter by each type: exactly 1 each
+    for (etype, eid, _action) in &types {
+        let filtered = db
+            .audit_as_at(after_all, Some(etype), 100)
+            .await
+            .unwrap();
+        let matches: Vec<_> = filtered
+            .iter()
+            .filter(|e| e.user_id == TEST_USER && e.entity_id == *eid)
+            .collect();
+        assert_eq!(
+            matches.len(),
+            1,
+            "Expected 1 entry for entity_type={}, got {}",
+            etype,
+            matches.len()
+        );
+    }
+
+    cleanup_after(&db).await;
+}
+
+// =============================================================================
+// Test 16: Multi-extension lifecycle with interleaved epochs
+// =============================================================================
+#[tokio::test]
+async fn test_16_multi_extension_interleaved_epochs() {
+    let db = match setup().await {
+        Some(db) => db,
+        None => return,
+    };
+    cleanup_before(&db).await;
+
+    // Epoch 0
+    let epoch0 = now();
+    tick().await;
+
+    // Install ext-a and ext-b
+    for name in &["ext-a", "ext-b"] {
+        db.audit_log(AuditInput {
+            user_id: TEST_USER,
+            entity_type: "extension",
+            entity_id: name,
+            action: "install",
+            field: None,
+            old_value: None,
+            new_value: None,
+            metadata: None,
+        })
+        .await
+        .unwrap();
+    }
+
+    let epoch1 = now();
+    tick().await;
+
+    // Activate ext-a, remove ext-b
+    db.audit_log(AuditInput {
+        user_id: TEST_USER,
+        entity_type: "extension",
+        entity_id: "ext-a",
+        action: "activate",
+        field: None,
+        old_value: None,
+        new_value: None,
+        metadata: None,
+    })
+    .await
+    .unwrap();
+
+    db.audit_log(AuditInput {
+        user_id: TEST_USER,
+        entity_type: "extension",
+        entity_id: "ext-b",
+        action: "delete",
+        field: None,
+        old_value: None,
+        new_value: None,
+        metadata: None,
+    })
+    .await
+    .unwrap();
+
+    let epoch2 = now();
+    tick().await;
+
+    // Remove ext-a
+    db.audit_log(AuditInput {
+        user_id: TEST_USER,
+        entity_type: "extension",
+        entity_id: "ext-a",
+        action: "delete",
+        field: None,
+        old_value: None,
+        new_value: None,
+        metadata: None,
+    })
+    .await
+    .unwrap();
+
+    let epoch3 = now();
+
+    // At epoch0: nothing
+    let at0 = db.audit_as_at(epoch0, Some("extension"), 100).await.unwrap();
+    let ours0: Vec<_> = at0.iter().filter(|e| e.user_id == TEST_USER).collect();
+    assert_eq!(ours0.len(), 0);
+
+    // At epoch1: 2 installs
+    let at1 = db.audit_as_at(epoch1, Some("extension"), 100).await.unwrap();
+    let ours1: Vec<_> = at1.iter().filter(|e| e.user_id == TEST_USER).collect();
+    assert_eq!(ours1.len(), 2);
+    assert!(ours1.iter().all(|e| e.action == "install"));
+
+    // At epoch2: 4 events (2 installs + activate ext-a + delete ext-b)
+    let at2 = db.audit_as_at(epoch2, Some("extension"), 100).await.unwrap();
+    let ours2: Vec<_> = at2.iter().filter(|e| e.user_id == TEST_USER).collect();
+    assert_eq!(ours2.len(), 4);
+
+    // At epoch3: 5 events (add delete ext-a)
+    let at3 = db.audit_as_at(epoch3, Some("extension"), 100).await.unwrap();
+    let ours3: Vec<_> = at3.iter().filter(|e| e.user_id == TEST_USER).collect();
+    assert_eq!(ours3.len(), 5);
+
+    // Verify ext-a has 3 entries (install, activate, delete)
+    let ext_a = db
+        .audit_history("extension", "ext-a", 100)
+        .await
+        .unwrap();
+    assert_eq!(ext_a.len(), 3);
+
+    // Verify ext-b has 2 entries (install, delete)
+    let ext_b = db
+        .audit_history("extension", "ext-b", 100)
+        .await
+        .unwrap();
+    assert_eq!(ext_b.len(), 2);
+
+    cleanup_after(&db).await;
 }

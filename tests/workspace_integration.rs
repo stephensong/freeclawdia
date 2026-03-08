@@ -10,7 +10,18 @@ use ironclaw::workspace::{MockEmbeddings, SearchConfig, Workspace, paths};
 
 fn get_pool() -> deadpool_postgres::Pool {
     let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://localhost/ironclaw_test".to_string());
+        .unwrap_or_else(|_| "postgres://localhost/clawdia_test_gary".to_string());
+
+    // SAFETY: refuse to run against production databases
+    let db_name = database_url.rsplit('/').next().unwrap_or("");
+    let db_name = db_name.split('?').next().unwrap_or("");
+    if !db_name.contains("_test") {
+        panic!(
+            "SAFETY: refusing to run tests against database '{}' — \
+             name must contain '_test'. Set DATABASE_URL to a test database.",
+            db_name
+        );
+    }
 
     let config: tokio_postgres::Config = database_url.parse().expect("Invalid DATABASE_URL");
 

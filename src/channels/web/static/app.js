@@ -4984,6 +4984,14 @@ function renderHistoryEvent(entry) {
     entityLabel = 'Setting: ' + entry.entity_id;
   } else if (entry.entity_type === 'conversation') {
     entityLabel = 'Thread ' + entry.entity_id.substring(0, 8) + '...';
+  } else if (entry.entity_type === 'extension') {
+    entityLabel = 'Extension: ' + entry.entity_id;
+  } else if (entry.entity_type === 'skill') {
+    entityLabel = 'Skill: ' + entry.entity_id;
+  } else if (entry.entity_type === 'routine') {
+    entityLabel = 'Routine ' + entry.entity_id.substring(0, 8) + '...';
+  } else if (entry.entity_type === 'secret') {
+    entityLabel = 'Secret: ' + entry.entity_id;
   } else {
     entityLabel = entry.entity_type + ' ' + entry.entity_id.substring(0, 8) + '...';
   }
