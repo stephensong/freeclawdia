@@ -130,6 +130,7 @@
       <div class="spacer"></div>
       <button data-tab="faq">FAQ</button>
       <button data-tab="iaq">IAQ</button>
+      <button data-tab="history" id="history-tab-btn">History</button>
       <button class="status-logs-btn" data-tab="logs" title="Logs">Logs</button>
       <div class="tee-shield" id="tee-shield" style="display:none" title="Running in a Trusted Execution Environment">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -293,6 +294,35 @@
     <div class="tab-panel" id="tab-iaq">
       <div class="docs-container" id="iaq-content">
         <div class="empty-state">Loading IAQ...</div>
+      </div>
+    </div>
+
+    <!-- History / Time Travel Tab -->
+    <div class="tab-panel" id="tab-history">
+      <div class="history-container">
+        <div class="history-toolbar">
+          <div class="history-toolbar-left">
+            <label class="history-label">View system as at:</label>
+            <input type="datetime-local" id="history-datetime" class="history-datetime">
+            <button id="history-travel-btn" onclick="activateTimeTravel()">Travel</button>
+            <button id="history-reset-btn" onclick="resetTimeTravel()" style="display:none">Back to Now</button>
+          </div>
+          <div class="history-toolbar-right">
+            <select id="history-filter">
+              <option value="">All types</option>
+              <option value="setting">Settings</option>
+              <option value="conversation">Conversations</option>
+              <option value="message">Messages</option>
+            </select>
+            <button onclick="loadTimeline()">Refresh</button>
+          </div>
+        </div>
+        <div class="history-time-indicator" id="history-time-indicator" style="display:none">
+          <span id="history-time-label"></span>
+        </div>
+        <div class="history-timeline" id="history-timeline">
+          <div class="empty-state">Loading timeline...</div>
+        </div>
       </div>
     </div>
 

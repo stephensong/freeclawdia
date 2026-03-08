@@ -238,6 +238,7 @@ pub async fn start_server(
         // Audit / time travel
         .route("/api/audit/history", get(audit_history_handler))
         .route("/api/audit/timeline", get(audit_timeline_handler))
+        .route("/api/audit/reconstruct/settings", get(audit_reconstruct_settings_handler))
         // Spaces
         .route(
             "/api/chat/spaces",
@@ -1682,6 +1683,59 @@ async fn audit_timeline_handler(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(serde_json::json!({ "entries": entries })))
+}
+
+/// Reconstruct settings state as of a given timestamp by replaying the audit log.
+///
+/// Algorithm: fetch all "setting" audit entries up to `as_at`, then replay
+/// forward from oldest to newest. Creates build current state, updates overwrite,
+/// deletes remove.
+async fn audit_reconstruct_settings_handler(
+    State(state): State<Arc<GatewayState>>,
+    Query(query): Query<AuditTimelineQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let store = state
+        .store
+        .as_ref()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "DB not available".to_string()))?;
+    let as_at = if let Some(ref ts) = query.before {
+        ts.parse::<chrono::DateTime<chrono::Utc>>()
+            .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid timestamp: {}", e)))?
+    } else {
+        chrono::Utc::now()
+    };
+
+    // Get all setting audit entries up to the requested time (newest first from DB)
+    let mut entries = store
+        .audit_as_at(as_at, Some("setting"), 10000)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Reverse to replay oldest-first
+    entries.reverse();
+
+    // Replay to build state
+    let mut settings: std::collections::HashMap<String, serde_json::Value> =
+        std::collections::HashMap::new();
+    for entry in &entries {
+        match entry.action.as_str() {
+            "create" | "update" => {
+                if let Some(ref val) = entry.new_value {
+                    settings.insert(entry.entity_id.clone(), val.clone());
+                }
+            }
+            "delete" => {
+                settings.remove(&entry.entity_id);
+            }
+            _ => {}
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "as_at": as_at.to_rfc3339(),
+        "settings": settings,
+        "audit_entries_replayed": entries.len(),
+    })))
 }
 
 // --- Space helpers & handlers ---

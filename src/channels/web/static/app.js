@@ -1801,6 +1801,7 @@ function switchTab(tab) {
   if (tab === 'email') loadEmailTab();
   if (tab === 'faq') loadDocsTab('faq');
   if (tab === 'iaq') loadDocsTab('iaq');
+  if (tab === 'history') loadTimeline();
   if (tab === 'memory') loadMemoryTree();
   if (tab === 'jobs') loadJobs();
   if (tab === 'routines') loadRoutines();
@@ -4919,4 +4920,204 @@ function inlineMarkdown(text) {
   // Em dash
   text = text.replace(/ — /g, ' \u2014 ');
   return text;
+}
+
+// --- History / Time Travel ---
+
+var timeTravelActive = false;
+var timeTravelTs = null;
+
+function loadTimeline() {
+  var timeline = document.getElementById('history-timeline');
+  timeline.innerHTML = '<div class="empty-state">Loading...</div>';
+
+  var filter = document.getElementById('history-filter').value;
+  var url = '/api/audit/timeline?limit=200';
+  if (timeTravelTs) {
+    url += '&before=' + encodeURIComponent(timeTravelTs);
+  }
+  if (filter) {
+    url += '&entity_type=' + encodeURIComponent(filter);
+  }
+
+  apiFetch(url).then(function(data) {
+    var entries = data.entries || [];
+    if (entries.length === 0) {
+      timeline.innerHTML = '<div class="empty-state">No history recorded yet. Changes to settings, threads, and other entities will appear here.</div>';
+      return;
+    }
+    timeline.innerHTML = '';
+    entries.forEach(function(entry) {
+      timeline.appendChild(renderHistoryEvent(entry));
+    });
+  }).catch(function(err) {
+    timeline.innerHTML = '<div class="empty-state">Failed to load: ' + (err.message || err) + '</div>';
+  });
+}
+
+function renderHistoryEvent(entry) {
+  var div = document.createElement('div');
+  div.className = 'history-event';
+
+  // Timestamp
+  var timeEl = document.createElement('div');
+  timeEl.className = 'history-event-time';
+  var d = new Date(entry.ts);
+  timeEl.textContent = d.toLocaleDateString([], { month: 'short', day: 'numeric' })
+    + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  div.appendChild(timeEl);
+
+  // Action badge
+  var badge = document.createElement('span');
+  badge.className = 'history-event-badge ' + entry.action;
+  badge.textContent = entry.action;
+  div.appendChild(badge);
+
+  // Body
+  var body = document.createElement('div');
+  body.className = 'history-event-body';
+
+  var entityEl = document.createElement('div');
+  entityEl.className = 'history-event-entity';
+  var entityLabel = entry.entity_type;
+  if (entry.entity_type === 'setting') {
+    entityLabel = 'Setting: ' + entry.entity_id;
+  } else if (entry.entity_type === 'conversation') {
+    entityLabel = 'Thread ' + entry.entity_id.substring(0, 8) + '...';
+  } else {
+    entityLabel = entry.entity_type + ' ' + entry.entity_id.substring(0, 8) + '...';
+  }
+  entityEl.textContent = entityLabel;
+  body.appendChild(entityEl);
+
+  if (entry.field) {
+    var fieldEl = document.createElement('div');
+    fieldEl.className = 'history-event-field';
+    fieldEl.textContent = 'Field: ' + entry.field;
+    body.appendChild(fieldEl);
+  }
+
+  // Show diff for old/new values
+  if (entry.old_value !== null || entry.new_value !== null) {
+    var diffEl = document.createElement('div');
+    diffEl.className = 'history-event-diff';
+    if (entry.old_value !== null) {
+      var oldSpan = document.createElement('span');
+      oldSpan.className = 'old';
+      oldSpan.textContent = truncateValue(entry.old_value);
+      diffEl.appendChild(oldSpan);
+    }
+    if (entry.old_value !== null && entry.new_value !== null) {
+      diffEl.appendChild(document.createTextNode(' → '));
+    }
+    if (entry.new_value !== null) {
+      var newSpan = document.createElement('span');
+      newSpan.className = 'new';
+      newSpan.textContent = truncateValue(entry.new_value);
+      diffEl.appendChild(newSpan);
+    }
+    body.appendChild(diffEl);
+  }
+
+  div.appendChild(body);
+  return div;
+}
+
+function truncateValue(val) {
+  var s = typeof val === 'string' ? val : JSON.stringify(val);
+  if (s.length > 120) return s.substring(0, 117) + '...';
+  return s;
+}
+
+function activateTimeTravel() {
+  var input = document.getElementById('history-datetime');
+  if (!input.value) return;
+
+  var d = new Date(input.value);
+  timeTravelTs = d.toISOString();
+  timeTravelActive = true;
+
+  // Show indicator
+  var indicator = document.getElementById('history-time-indicator');
+  indicator.style.display = 'block';
+  document.getElementById('history-time-label').textContent =
+    'TIME TRAVEL ACTIVE \u2014 Viewing system as at ' + d.toLocaleString();
+
+  // Show reset button, style the tab
+  document.getElementById('history-reset-btn').style.display = '';
+  var tabBtn = document.getElementById('history-tab-btn');
+  tabBtn.style.color = '#ef4444';
+  tabBtn.style.fontWeight = '700';
+
+  loadTimeline();
+  loadReconstructedSettings();
+}
+
+function loadReconstructedSettings() {
+  if (!timeTravelTs) return;
+
+  var url = '/api/audit/reconstruct/settings?before=' + encodeURIComponent(timeTravelTs);
+  apiFetch(url).then(function(data) {
+    var timeline = document.getElementById('history-timeline');
+    var settings = data.settings || {};
+    var keys = Object.keys(settings).sort();
+
+    // Insert snapshot panel at the top of the timeline
+    var existing = document.getElementById('history-snapshot');
+    if (existing) existing.remove();
+
+    if (keys.length === 0 && data.audit_entries_replayed === 0) return;
+
+    var panel = document.createElement('div');
+    panel.id = 'history-snapshot';
+    panel.className = 'history-snapshot';
+
+    var header = document.createElement('div');
+    header.className = 'history-snapshot-header';
+    header.textContent = 'Settings snapshot (' + keys.length + ' keys, ' + data.audit_entries_replayed + ' entries replayed)';
+    panel.appendChild(header);
+
+    if (keys.length > 0) {
+      var table = document.createElement('div');
+      table.className = 'history-snapshot-table';
+      keys.forEach(function(key) {
+        var row = document.createElement('div');
+        row.className = 'history-snapshot-row';
+        var keyEl = document.createElement('span');
+        keyEl.className = 'history-snapshot-key';
+        keyEl.textContent = key;
+        var valEl = document.createElement('span');
+        valEl.className = 'history-snapshot-val';
+        valEl.textContent = truncateValue(settings[key]);
+        row.appendChild(keyEl);
+        row.appendChild(valEl);
+        table.appendChild(row);
+      });
+      panel.appendChild(table);
+    } else {
+      var empty = document.createElement('div');
+      empty.className = 'history-snapshot-empty';
+      empty.textContent = 'No settings existed at this point in time.';
+      panel.appendChild(empty);
+    }
+
+    timeline.insertBefore(panel, timeline.firstChild);
+  }).catch(function(err) {
+    console.warn('[history] Failed to reconstruct settings:', err);
+  });
+}
+
+function resetTimeTravel() {
+  timeTravelActive = false;
+  timeTravelTs = null;
+
+  document.getElementById('history-time-indicator').style.display = 'none';
+  document.getElementById('history-reset-btn').style.display = 'none';
+  document.getElementById('history-datetime').value = '';
+
+  var tabBtn = document.getElementById('history-tab-btn');
+  tabBtn.style.color = '';
+  tabBtn.style.fontWeight = '';
+
+  loadTimeline();
 }
