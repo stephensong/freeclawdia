@@ -41,7 +41,7 @@ use crate::channels::web::log_layer::LogBroadcaster;
 use crate::channels::web::sse::SseManager;
 use crate::channels::web::types::*;
 use crate::channels::web::util::{build_turns_from_db_messages, truncate_preview};
-use crate::db::Database;
+use crate::db::{AuditInput, Database};
 use crate::extensions::ExtensionManager;
 use crate::orchestrator::job_manager::ContainerJobManager;
 use crate::tools::ToolRegistry;
@@ -235,6 +235,9 @@ pub async fn start_server(
         // Docs (FAQ/IAQ)
         .route("/api/docs/faq", get(docs_faq_handler))
         .route("/api/docs/iaq", get(docs_iaq_handler))
+        // Audit / time travel
+        .route("/api/audit/history", get(audit_history_handler))
+        .route("/api/audit/timeline", get(audit_timeline_handler))
         // Spaces
         .route(
             "/api/chat/spaces",
@@ -1240,6 +1243,14 @@ async fn chat_delete_thread_handler(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
+    let _ = store
+        .audit_log(AuditInput {
+            user_id: &state.user_id, entity_type: "conversation",
+            entity_id: &thread_id.to_string(), action: "delete",
+            field: None, old_value: None, new_value: None, metadata: None,
+        })
+        .await;
+
     // Clean up session state
     if let Some(ref sm) = state.session_manager {
         sm.remove_thread(&state.user_id, thread_id).await;
@@ -1613,6 +1624,66 @@ async fn docs_iaq_handler() -> Result<Json<serde_json::Value>, (StatusCode, Stri
     Ok(Json(serde_json::json!({ "content": content })))
 }
 
+// --- Audit / time travel handlers ---
+
+#[derive(Debug, Deserialize)]
+struct AuditHistoryQuery {
+    entity_type: String,
+    entity_id: String,
+    #[serde(default = "default_audit_limit")]
+    limit: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct AuditTimelineQuery {
+    #[serde(default)]
+    before: Option<String>,
+    #[serde(default)]
+    entity_type: Option<String>,
+    #[serde(default = "default_audit_limit")]
+    limit: i64,
+}
+
+fn default_audit_limit() -> i64 {
+    100
+}
+
+async fn audit_history_handler(
+    State(state): State<Arc<GatewayState>>,
+    Query(query): Query<AuditHistoryQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let store = state
+        .store
+        .as_ref()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "DB not available".to_string()))?;
+    let entries = store
+        .audit_history(&query.entity_type, &query.entity_id, query.limit)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "entries": entries })))
+}
+
+async fn audit_timeline_handler(
+    State(state): State<Arc<GatewayState>>,
+    Query(query): Query<AuditTimelineQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let store = state
+        .store
+        .as_ref()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "DB not available".to_string()))?;
+    let before = if let Some(ref ts) = query.before {
+        ts.parse::<chrono::DateTime<chrono::Utc>>()
+            .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid timestamp: {}", e)))?
+    } else {
+        chrono::Utc::now()
+    };
+    let entries = store
+        .audit_as_at(before, query.entity_type.as_deref(), query.limit)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "entries": entries })))
+}
+
 // --- Space helpers & handlers ---
 
 const SPACES_SETTING_KEY: &str = "spaces";
@@ -1816,6 +1887,14 @@ async fn thread_rename_handler(
         .update_conversation_metadata_field(tid, "custom_title", &value)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let _ = store
+        .audit_log(AuditInput {
+            user_id: &state.user_id, entity_type: "conversation",
+            entity_id: &tid.to_string(), action: "update",
+            field: Some("custom_title"), old_value: None, new_value: Some(&value), metadata: None,
+        })
+        .await;
 
     Ok(Json(serde_json::json!({"ok": true})))
 }
@@ -2888,6 +2967,8 @@ async fn settings_set_handler(
         .store
         .as_ref()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    // Capture old value for audit before overwriting
+    let old_value = store.get_setting(&state.user_id, &key).await.ok().flatten();
     store
         .set_setting(&state.user_id, &key, &body.value)
         .await
@@ -2895,6 +2976,15 @@ async fn settings_set_handler(
             tracing::error!("Failed to set setting '{}': {}", key, e);
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
+
+    // Audit log (fire-and-forget)
+    let action = if old_value.is_some() { "update" } else { "create" };
+    let _ = store
+        .audit_log(AuditInput {
+            user_id: &state.user_id, entity_type: "setting", entity_id: &key, action,
+            field: None, old_value: old_value.as_ref(), new_value: Some(&body.value), metadata: None,
+        })
+        .await;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -2907,6 +2997,7 @@ async fn settings_delete_handler(
         .store
         .as_ref()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let old_value = store.get_setting(&state.user_id, &key).await.ok().flatten();
     store
         .delete_setting(&state.user_id, &key)
         .await
@@ -2914,6 +3005,15 @@ async fn settings_delete_handler(
             tracing::error!("Failed to delete setting '{}': {}", key, e);
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
+
+    if let Some(ref old) = old_value {
+        let _ = store
+            .audit_log(AuditInput {
+                user_id: &state.user_id, entity_type: "setting", entity_id: &key, action: "delete",
+                field: None, old_value: Some(old), new_value: None, metadata: None,
+            })
+            .await;
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }

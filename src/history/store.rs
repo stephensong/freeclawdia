@@ -2057,4 +2057,110 @@ impl Store {
         let count: i64 = row.get("cnt");
         Ok(count > 0)
     }
+
+    // ==================== Audit Log ====================
+
+    pub async fn audit_log(&self, input: &crate::db::AuditInput<'_>) -> Result<(), DatabaseError> {
+        let conn = self.conn().await?;
+        conn.execute(
+            r#"
+            INSERT INTO audit_log (user_id, entity_type, entity_id, action, field, old_value, new_value, metadata)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            "#,
+            &[
+                &input.user_id, &input.entity_type, &input.entity_id, &input.action,
+                &input.field, &input.old_value, &input.new_value, &input.metadata,
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn audit_history(
+        &self,
+        entity_type: &str,
+        entity_id: &str,
+        limit: i64,
+    ) -> Result<Vec<crate::db::AuditEntry>, DatabaseError> {
+        let conn = self.conn().await?;
+        let rows = conn
+            .query(
+                r#"
+                SELECT id, ts, user_id, entity_type, entity_id, action, field,
+                       old_value, new_value, metadata
+                FROM audit_log
+                WHERE entity_type = $1 AND entity_id = $2
+                ORDER BY ts DESC
+                LIMIT $3
+                "#,
+                &[&entity_type, &entity_id, &limit],
+            )
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| crate::db::AuditEntry {
+                id: r.get("id"),
+                ts: r.get("ts"),
+                user_id: r.get("user_id"),
+                entity_type: r.get("entity_type"),
+                entity_id: r.get("entity_id"),
+                action: r.get("action"),
+                field: r.get("field"),
+                old_value: r.get("old_value"),
+                new_value: r.get("new_value"),
+                metadata: r.get("metadata"),
+            })
+            .collect())
+    }
+
+    pub async fn audit_as_at(
+        &self,
+        before: chrono::DateTime<chrono::Utc>,
+        entity_type: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<crate::db::AuditEntry>, DatabaseError> {
+        let conn = self.conn().await?;
+        let rows = if let Some(et) = entity_type {
+            conn.query(
+                r#"
+                SELECT id, ts, user_id, entity_type, entity_id, action, field,
+                       old_value, new_value, metadata
+                FROM audit_log
+                WHERE ts <= $1 AND entity_type = $2
+                ORDER BY ts DESC
+                LIMIT $3
+                "#,
+                &[&before, &et, &limit],
+            )
+            .await?
+        } else {
+            conn.query(
+                r#"
+                SELECT id, ts, user_id, entity_type, entity_id, action, field,
+                       old_value, new_value, metadata
+                FROM audit_log
+                WHERE ts <= $1
+                ORDER BY ts DESC
+                LIMIT $2
+                "#,
+                &[&before, &limit],
+            )
+            .await?
+        };
+        Ok(rows
+            .iter()
+            .map(|r| crate::db::AuditEntry {
+                id: r.get("id"),
+                ts: r.get("ts"),
+                user_id: r.get("user_id"),
+                entity_type: r.get("entity_type"),
+                entity_id: r.get("entity_id"),
+                action: r.get("action"),
+                field: r.get("field"),
+                old_value: r.get("old_value"),
+                new_value: r.get("new_value"),
+                metadata: r.get("metadata"),
+            })
+            .collect())
+    }
 }

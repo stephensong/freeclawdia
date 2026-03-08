@@ -427,6 +427,58 @@ pub trait WorkspaceStore: Send + Sync {
     ) -> Result<Vec<SearchResult>, WorkspaceError>;
 }
 
+// ==================== AuditStore ====================
+
+/// An entry in the append-only audit log (Phase 1 of temporal DB support).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AuditEntry {
+    pub id: i64,
+    pub ts: DateTime<Utc>,
+    pub user_id: String,
+    pub entity_type: String,
+    pub entity_id: String,
+    pub action: String,
+    pub field: Option<String>,
+    pub old_value: Option<serde_json::Value>,
+    pub new_value: Option<serde_json::Value>,
+    pub metadata: Option<serde_json::Value>,
+}
+
+/// Input for recording an audit log entry.
+pub struct AuditInput<'a> {
+    pub user_id: &'a str,
+    pub entity_type: &'a str,
+    pub entity_id: &'a str,
+    pub action: &'a str,
+    pub field: Option<&'a str>,
+    pub old_value: Option<&'a serde_json::Value>,
+    pub new_value: Option<&'a serde_json::Value>,
+    pub metadata: Option<&'a serde_json::Value>,
+}
+
+#[async_trait]
+pub trait AuditStore: Send + Sync {
+    /// Append an entry to the audit log. Fire-and-forget — callers should not
+    /// block on this or propagate errors to users.
+    async fn audit_log(&self, input: AuditInput<'_>) -> Result<(), DatabaseError>;
+
+    /// Query audit entries for an entity, newest first.
+    async fn audit_history(
+        &self,
+        entity_type: &str,
+        entity_id: &str,
+        limit: i64,
+    ) -> Result<Vec<AuditEntry>, DatabaseError>;
+
+    /// Query all audit entries at or before a given timestamp, newest first.
+    async fn audit_as_at(
+        &self,
+        before: DateTime<Utc>,
+        entity_type: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<AuditEntry>, DatabaseError>;
+}
+
 /// Backend-agnostic database supertrait.
 ///
 /// Combines all sub-traits into one. Existing `Arc<dyn Database>` consumers
@@ -440,6 +492,7 @@ pub trait Database:
     + ToolFailureStore
     + SettingsStore
     + WorkspaceStore
+    + AuditStore
     + Send
     + Sync
 {

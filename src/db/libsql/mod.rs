@@ -26,7 +26,7 @@ use crate::agent::routine::{
     NotifyConfig, Routine, RoutineAction, RoutineGuardrails, RoutineRun, RunStatus, Trigger,
 };
 use crate::context::JobState;
-use crate::db::Database;
+use crate::db::{AuditEntry, AuditInput, AuditStore, Database};
 use crate::error::DatabaseError;
 use crate::workspace::MemoryDocument;
 
@@ -295,6 +295,33 @@ impl Database for LibSqlBackend {
         // Apply incremental migrations (V9+) tracked in _migrations table.
         libsql_migrations::run_incremental(&conn).await?;
         Ok(())
+    }
+}
+
+// ==================== AuditStore (stub — temporal is PostgreSQL-only) ====================
+
+#[async_trait]
+impl AuditStore for LibSqlBackend {
+    async fn audit_log(&self, _input: AuditInput<'_>) -> Result<(), DatabaseError> {
+        Ok(()) // no-op on libSQL
+    }
+
+    async fn audit_history(
+        &self,
+        _entity_type: &str,
+        _entity_id: &str,
+        _limit: i64,
+    ) -> Result<Vec<AuditEntry>, DatabaseError> {
+        Ok(vec![])
+    }
+
+    async fn audit_as_at(
+        &self,
+        _before: chrono::DateTime<chrono::Utc>,
+        _entity_type: Option<&str>,
+        _limit: i64,
+    ) -> Result<Vec<AuditEntry>, DatabaseError> {
+        Ok(vec![])
     }
 }
 

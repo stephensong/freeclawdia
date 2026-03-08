@@ -16,8 +16,8 @@ use crate::agent::routine::{Routine, RoutineRun, RunStatus};
 use crate::config::DatabaseConfig;
 use crate::context::{ActionRecord, JobContext, JobState};
 use crate::db::{
-    ConversationStore, Database, JobStore, RoutineStore, SandboxStore, SettingsStore,
-    ToolFailureStore, WorkspaceStore,
+    AuditEntry, AuditInput, AuditStore, ConversationStore, Database, JobStore, RoutineStore,
+    SandboxStore, SettingsStore, ToolFailureStore, WorkspaceStore,
 };
 use crate::error::{DatabaseError, WorkspaceError};
 use crate::history::{
@@ -686,5 +686,32 @@ impl WorkspaceStore for PgBackend {
         self.repo
             .hybrid_search(user_id, agent_id, query, embedding, config)
             .await
+    }
+}
+
+// ==================== AuditStore ====================
+
+#[async_trait]
+impl AuditStore for PgBackend {
+    async fn audit_log(&self, input: AuditInput<'_>) -> Result<(), DatabaseError> {
+        self.store.audit_log(&input).await
+    }
+
+    async fn audit_history(
+        &self,
+        entity_type: &str,
+        entity_id: &str,
+        limit: i64,
+    ) -> Result<Vec<AuditEntry>, DatabaseError> {
+        self.store.audit_history(entity_type, entity_id, limit).await
+    }
+
+    async fn audit_as_at(
+        &self,
+        before: DateTime<Utc>,
+        entity_type: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<AuditEntry>, DatabaseError> {
+        self.store.audit_as_at(before, entity_type, limit).await
     }
 }
