@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# Run a third FreeClawdia instance as Iris on port 4002.
+# Run a third FreeClawdia instance as Oli on port 4002.
 #
-# Usage: ./scripts/run-iris.sh
+# Usage: ./scripts/run-oli.sh
 #
-# Opens at http://localhost:4002 with token IrisToken123
+# Opens at http://localhost:4002 with token OliToken123
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 set -a
-source <(grep -v '^\s*#' .env.iris | grep -v '^\s*$')
+source <(grep -v '^\s*#' .env.oli | grep -v '^\s*$')
 set +a
 
-echo "Starting FreeClawdia as Iris on port ${GATEWAY_PORT:-3002}..."
-echo "  Database: freeclawdia_iris"
-echo "  Email:    iris@local.dev"
+echo "Starting FreeClawdia as Oli on port ${GATEWAY_PORT:-3002}..."
+echo "  Database: freeclawdia_oli"
+echo "  Email:    oli@local.dev"
 echo "  URL:      http://localhost:${GATEWAY_PORT:-3002}"
 echo "  Token:    ${GATEWAY_AUTH_TOKEN}"
 echo ""
