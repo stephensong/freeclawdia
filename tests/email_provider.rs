@@ -1,4 +1,7 @@
-//! End-to-end email tests against a local Stalwart JMAP server.
+//! Email provider tests against a local Stalwart JMAP server.
+//!
+//! Tests the `JmapEmailProvider` directly — verifies JMAP operations
+//! (list mailboxes, send, receive, sent folder) work correctly.
 //!
 //! Prerequisites:
 //!   - Stalwart running on localhost:8080
@@ -8,7 +11,7 @@
 //! These tests are gated behind `#[cfg(feature = "email")]` and require
 //! a live Stalwart instance — they are NOT run in CI by default.
 //! Run with:
-//!   cargo test --features email --test email_e2e -- --nocapture
+//!   cargo test --features email --test email_provider -- --nocapture
 
 #![cfg(feature = "email")]
 
@@ -237,7 +240,7 @@ async fn test_04_list_all_mailbox_contents() {
         let emails = gary
             .list_emails(&mb.id, 0, 50)
             .await
-            .expect(&format!("list_emails for {}", mb.name));
+            .unwrap_or_else(|e| panic!("list_emails for {}: {e}", mb.name));
         println!(
             "  {} (id={}, role={:?}) — reported={} total, actually_fetched={}",
             mb.name,
