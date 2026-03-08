@@ -226,3 +226,28 @@ async fn test_03_sent_folder() {
 
     println!("Sent folder test: PASSED");
 }
+
+/// Diagnostic: list every mailbox and try to list emails from each.
+#[tokio::test]
+async fn test_04_list_all_mailbox_contents() {
+    let gary = gary_provider();
+
+    let mailboxes = gary.list_mailboxes().await.expect("list_mailboxes");
+    for mb in &mailboxes {
+        let emails = gary
+            .list_emails(&mb.id, 0, 50)
+            .await
+            .expect(&format!("list_emails for {}", mb.name));
+        println!(
+            "  {} (id={}, role={:?}) — reported={} total, actually_fetched={}",
+            mb.name,
+            mb.id,
+            mb.role,
+            mb.total_emails,
+            emails.len()
+        );
+        for e in &emails {
+            println!("    [{}] {}", e.id, e.subject);
+        }
+    }
+}

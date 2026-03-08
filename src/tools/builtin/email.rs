@@ -23,6 +23,53 @@ impl EmailListTool {
     }
 }
 
+/// Resolve a mailbox identifier to an actual mailbox ID.
+///
+/// Accepts a raw JMAP mailbox ID, a role name (e.g. "inbox", "sent", "drafts"),
+/// or a mailbox display name (e.g. "Sent Items"). Falls back to using the
+/// input as-is if no match is found (lets the JMAP server return the error).
+async fn resolve_mailbox_id(
+    provider: &dyn EmailProvider,
+    input: &str,
+) -> Result<String, ToolError> {
+    let lower = input.to_lowercase();
+    // Common role aliases
+    let role_needle = match lower.as_str() {
+        "sent" | "sent items" | "sent mail" => Some("sent"),
+        "inbox" => Some("inbox"),
+        "drafts" | "draft" => Some("drafts"),
+        "trash" | "deleted items" | "deleted" => Some("trash"),
+        "junk" | "junk mail" | "spam" => Some("junk"),
+        "archive" => Some("archive"),
+        _ => None,
+    };
+
+    let mailboxes = provider
+        .list_mailboxes()
+        .await
+        .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+
+    // First: exact ID match (already correct)
+    if mailboxes.iter().any(|mb| mb.id == input) {
+        return Ok(input.to_string());
+    }
+
+    // Second: match by role
+    if let Some(mb) = role_needle
+        .and_then(|role| mailboxes.iter().find(|mb| mb.role.as_deref() == Some(role)))
+    {
+        return Ok(mb.id.clone());
+    }
+
+    // Third: case-insensitive name match
+    if let Some(mb) = mailboxes.iter().find(|mb| mb.name.to_lowercase() == lower) {
+        return Ok(mb.id.clone());
+    }
+
+    // Fall through: use as-is (JMAP will error if invalid)
+    Ok(input.to_string())
+}
+
 #[async_trait]
 impl Tool for EmailListTool {
     fn name(&self) -> &str {
@@ -30,7 +77,7 @@ impl Tool for EmailListTool {
     }
 
     fn description(&self) -> &str {
-        "List emails in a mailbox. Use email_mailboxes first to find mailbox IDs."
+        "List emails in a mailbox. Accepts a mailbox ID, role (e.g. \"inbox\", \"sent\", \"drafts\"), or name (e.g. \"Sent Items\")."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -39,7 +86,7 @@ impl Tool for EmailListTool {
             "properties": {
                 "mailbox_id": {
                     "type": "string",
-                    "description": "The mailbox ID to list emails from"
+                    "description": "The mailbox ID, role (inbox/sent/drafts/trash/junk), or display name"
                 },
                 "offset": {
                     "type": "integer",
@@ -63,7 +110,8 @@ impl Tool for EmailListTool {
         _ctx: &JobContext,
     ) -> Result<ToolOutput, ToolError> {
         let start = Instant::now();
-        let mailbox_id = require_str(&params, "mailbox_id")?;
+        let mailbox_input = require_str(&params, "mailbox_id")?;
+        let mailbox_id = resolve_mailbox_id(self.provider.as_ref(), mailbox_input).await?;
         let offset = params.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
         let limit = params
             .get("limit")
@@ -73,7 +121,7 @@ impl Tool for EmailListTool {
 
         let emails = self
             .provider
-            .list_emails(mailbox_id, offset, limit)
+            .list_emails(&mailbox_id, offset, limit)
             .await
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
 
